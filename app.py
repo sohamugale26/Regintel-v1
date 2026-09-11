@@ -8,7 +8,7 @@ import os
 # Suppress SSL certificate verification warnings for government endpoints
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- PAGE CONFIGURATION & ENTERPRISE COMPLIANCE THEME ---
+# --- PAGE CONFIGURATION & THEME COMPATIBILITY ---
 st.set_page_config(
     page_title="RegIntel | Regulatory Compliance & Governance",
     page_icon="🛡️",
@@ -16,14 +16,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Dark Mode / Light Mode Compatible CSS
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
     
     html, body, [class*="css"] {
         font-family: 'IBM Plex Sans', sans-serif;
-        color: #1B2430;
-        background-color: #F5F6F8;
     }
     
     /* Live Pulse Animation */
@@ -44,68 +43,50 @@ st.markdown("""
         100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(211, 47, 47, 0); }
     }
 
+    /* Metric Cards - Native Theme Colors */
     .metric-card {
-        background: #FFFFFF;
-        border: 1px solid #E2E5EA;
+        border: 1px solid var(--secondary-background-color);
         border-radius: 8px;
         padding: 14px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        background-color: var(--background-color);
     }
     .metric-label {
         font-size: 0.75rem;
         font-weight: 600;
         text-transform: uppercase;
-        color: #5B6472;
+        color: var(--text-color);
+        opacity: 0.8;
     }
     .metric-value {
         font-size: 1.6rem;
         font-weight: 700;
-        color: #1B2430;
         margin-top: 4px;
         font-family: 'IBM Plex Mono', monospace;
     }
     
+    /* Badges */
     .official-badge-cdsco, .official-badge-ema {
         padding: 2px 8px;
         border-radius: 4px;
         font-weight: 600;
         font-size: 0.7rem;
+        border: 1px solid var(--secondary-background-color);
     }
-    .official-badge-cdsco { background-color: #EBF3FA; color: #1E5A8C; border: 1px solid #C4D7E8; }
-    .official-badge-ema { background-color: #EBF7F4; color: #0E7C74; border: 1px solid #B8E3DE; }
-    
     .priority-critical { background-color: #FBEAE9; color: #B3261E; padding: 2px 7px; border-radius: 4px; font-weight: 600; font-size: 0.7rem; }
     .priority-high { background-color: #FCEDE3; color: #B5591A; padding: 2px 7px; border-radius: 4px; font-weight: 600; font-size: 0.7rem; }
     .priority-medium { background-color: #FBF3DE; color: #8C6D14; padding: 2px 7px; border-radius: 4px; font-weight: 600; font-size: 0.7rem; }
     .priority-low { background-color: #EAF4EC; color: #3E7A4C; padding: 2px 7px; border-radius: 4px; font-weight: 600; font-size: 0.7rem; }
     
-    /* Compact Comparison Blocks */
-    .compact-comp {
-        font-size: 0.8rem;
-        padding: 8px 10px;
-        border-radius: 4px;
-        line-height: 1.4;
-        margin-top: 4px;
-    }
-    .comp-old { background-color: #FEF2F2; border-left: 3px solid #B3261E; }
-    .comp-new { background-color: #F0FDF4; border-left: 3px solid #3E7A4C; }
-    
-    .evidence-container {
-        background-color: #F8FAFC;
-        border-left: 3px solid #1E5A8C;
-        border-radius: 4px;
-        padding: 10px 12px;
-        font-size: 0.85rem;
-    }
-    
+    /* Typography */
     .section-title {
         font-size: 0.85rem;
         font-weight: 700;
         text-transform: uppercase;
-        color: #5B6472;
         margin-top: 12px;
         margin-bottom: 6px;
         letter-spacing: 0.03em;
+        opacity: 0.9;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -139,27 +120,23 @@ def seed_regulatory_baselines():
                 "Fast-Track Clinical Trial Testing Approval", "2026-04-30", "2026-06-01",
                 "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/",
                 "F.No. CT/26/04/2026-DCGI", "Clinical Trials & Registration",
-                "CDSCO permits immediate issuance of No Objection Certificates (NOC) for testing right after application submission, pending technical review.",
-                "Fast-track approval bypassing lengthy initial administrative review.",
-                "Wait weeks/months for NOC before testing could begin.",
-                "Testing can begin instantly upon application submission; technical review occurs concurrently.",
+                "CDSCO permits immediate issuance of No Objection Certificates (NOC) for testing right after application submission.",
+                "N/A", "Wait weeks for NOC.", "Testing can begin instantly upon application submission.",
                 "CDSCO will issue a No Objection Certificate (NOC) as soon as a company submits an application for testing...",
                 "Clinical Operations", "Critical", 98,
-                "Accelerates R&D timeline for new investigational products in the pipeline.",
+                "Accelerates R&D timeline for new investigational products.",
                 "Injectables, Oral Solids", "Action Required", "", ""
             ),
             (
                 "EU-EMA-2026-505", "EMA", "European Union", "Scientific Guideline",
-                "EMA OPEN Framework Update (EMA/55338/2023)", "2026-08-05", "2026-01-20",
-                "https://www.ema.europa.eu/en/human-regulatory/post-authorisation/variations/post-authorisation-guidance",
+                "EMA OPEN Framework Update", "2026-08-05", "2026-01-20",
+                "https://www.ema.europa.eu/en/human-regulatory-overview/public-health-threats/open-initiative",
                 "EMA/CHMP/QWP/17760/2026 Rev 2", "Clinical Trials & Registration",
-                "Near-concurrent scientific review framework with non-EU authorities requiring a harmonised global data package.",
-                "Requirement for harmonised CTD dossier construction across all participating OPEN jurisdictions.",
-                "Sequential or disjointed submissions across different regional authorities.",
-                "Single, coherent global data package designed for concurrent assessment by EMA and partners.",
+                "Near-concurrent scientific review framework requiring a harmonised global data package.",
+                "N/A", "Sequential regional submissions.", "Single, coherent global data package for concurrent assessment.",
                 "The dossier content and proposed indication must be harmonised across all participating jurisdictions...",
                 "Regulatory Affairs", "High", 85,
-                "Applies to company's specialized pipeline products seeking multi-regional authorization.",
+                "Applies to company's specialized pipeline products.",
                 "Biologics", "Needs Review", "", ""
             ),
             (
@@ -167,13 +144,11 @@ def seed_regulatory_baselines():
                 "Implementation of Pharmacovigilance (PV) System as per Schedule M", "2026-09-10", "2026-09-03",
                 "https://cdsco.gov.in/opencms/opencms/en/Notifications/Circulars/",
                 "File No. PV/Schedule-M/2026-09", "Pharmacovigilance",
-                "Mandatory establishment of a schedule-aligned PV system directly linked with batch manufacturing records.",
-                "Enforced integration of PV reporting directly aligned with Schedule M compliance audits.",
-                "Variable adherence depending on individual state licensing enforcement.",
-                "Strict compliance under NDCT Rules 2019 verified during standard regulatory inspections.",
+                "Mandatory establishment of a schedule-aligned PV system directly linked with batch records.",
+                "N/A", "Variable state-level adherence.", "Strict compliance verified during standard regulatory inspections.",
                 "All drug manufacturers and marketers are required to establish and maintain an effective pharmacovigilance (PV) system...",
                 "Quality Assurance", "High", 90,
-                "Affects all marketed products and requires immediate SOP verification.",
+                "Affects all marketed products and requires SOP verification.",
                 "Injectables, Oral Solids, Biologics", "Needs Review", "", ""
             )
         ]
@@ -279,7 +254,7 @@ with tab_dash:
 
     st.markdown("<br>", unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
-    with c1: st.markdown(f'<div class="metric-card"><div class="metric-label">Total System Updates</div><div class="metric-value">{total_system_count}</div></div>', unsafe_allow_html=True)
+    with c1: st.markdown(f'<div class="metric-card"><div class="metric-label" title="All publications harvested from official sites">Total System Updates ℹ️</div><div class="metric-value">{total_system_count}</div></div>', unsafe_allow_html=True)
     with c2: st.markdown(f'<div class="metric-card"><div class="metric-label">Updates Matching Scope</div><div class="metric-value" style="color: #1E5A8C;">{matching_count}</div></div>', unsafe_allow_html=True)
     with c3: st.markdown(f'<div class="metric-card"><div class="metric-label">Critical / High Priority</div><div class="metric-value" style="color: #B5591A;">{high_priority_count}</div></div>', unsafe_allow_html=True)
     with c4: st.markdown(f'<div class="metric-card"><div class="metric-label">Awaiting RA Review</div><div class="metric-value" style="color: #8C6D14;">{needs_review_count}</div></div>', unsafe_allow_html=True)
@@ -296,7 +271,7 @@ with tab_dash:
             with st.expander(f"[{item['authority']}] {item['title']} (Published: {item['published_date']})"):
                 header_col1, header_col2 = st.columns([4, 1])
                 with header_col1:
-                    st.markdown(f"{badge_html} &nbsp; <span class='{p_class}'>{item['priority']} Priority</span> &nbsp; <span style='font-size:0.8rem; color:#5B6472;'>Doc: {item['doc_type']} | Topic: {item['topic']}</span>", unsafe_allow_html=True)
+                    st.markdown(f"{badge_html} &nbsp; <span class='{p_class}'>{item['priority']} Priority</span> &nbsp; <span style='font-size:0.8rem; opacity:0.8;'>Doc: {item['doc_type']} | Topic: {item['topic']}</span>", unsafe_allow_html=True)
                     st.markdown(f"#### {item['title']}")
                 with header_col2:
                     st.metric("Relevance Score", f"{item['relevance_score']}/100")
@@ -307,21 +282,12 @@ with tab_dash:
                 
                 # Section 2: Compact Requirement Comparison
                 st.markdown("<div class='section-title'>Requirement Comparison</div>", unsafe_allow_html=True)
-                c_old, c_new = st.columns(2)
-                with c_old:
-                    st.markdown("**Previous Requirement:**")
-                    st.markdown(f'<div class="compact-comp comp-old">{item["previous_req"]}</div>', unsafe_allow_html=True)
-                with c_new:
-                    st.markdown("**New/Revised Requirement:**")
-                    st.markdown(f'<div class="compact-comp comp-new">{item["new_req"]}</div>', unsafe_allow_html=True)
+                st.markdown(f"**Previous:** {item['previous_req']} ➔ **New:** {item['new_req']}")
 
                 # Section 3: Official Reference / Evidence
                 st.markdown("<div class='section-title'>Official Reference & Evidence</div>", unsafe_allow_html=True)
-                st.markdown(f'''<div class="evidence-container">
-                    <b>Document / Reference No:</b> {item['official_ref']}<br>
-                    <b>Official URL:</b> <a href="{item['url']}" target="_blank">{item['url']}</a><br>
-                    <b>Verbatim Excerpt:</b> <i>"{item['official_excerpt']}"</i>
-                </div>''', unsafe_allow_html=True)
+                st.markdown(f"**Document No:** {item['official_ref']} &nbsp;|&nbsp; **Link:** [{item['url']}]({item['url']})")
+                st.markdown(f"> *\"{item['official_excerpt']}\"*")
 
                 st.write(f"**Operational Scope Affected:** {item['impact_area']} | **Impacted Formulations:** {item['affected_products']}")
                 
@@ -364,4 +330,3 @@ with tab_audit:
     df_logs = pd.read_sql_query("SELECT timestamp, user, action, record_id, details FROM audit_logs ORDER BY id DESC", conn)
     st.dataframe(df_logs, use_container_width=True, hide_index=True)
     
-
