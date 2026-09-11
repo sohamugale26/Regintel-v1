@@ -320,5 +320,5 @@ with tab_dash:
                     st.markdown(f"**Previous:** {item['previous_req']} ➔ **New:** {item['new_req']}")
 
                     st.markdown("<div class='section-title'>Official Reference & Evidence</div>", unsafe_allow_html=True)
-                    st.markdown(f"**Document No:** {item['official_ref']} &nbsp;|&nbsp; **Direct Link:** <a href='{item['url']}' target='_blank'>View Official PDF</a>"
+                    st.markdown(f"**Document No:** {item['official_ref']} &nbsp;|&nbsp; **Direct Link:** <a href='{item['url']}' target='_blank'>View Official PDF</a>")
     
