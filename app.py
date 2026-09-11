@@ -1,1249 +1,380 @@
-
-import os
-import re
-import io
-import json
-import time
-import hashlib
-import sqlite3
-from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
-
-import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 import streamlit as st
-
+import pandas as pd
+import requests, sqlite3, hashlib, re
+from bs4 import BeautifulSoup
+from datetime import datetime, timezone
+from io import BytesIO
 try:
     from pypdf import PdfReader
 except Exception:
     PdfReader = None
 
-# Optional AI support. The app remains functional without an API key.
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
+st.set_page_config(page_title="RegIntel", page_icon="🇮🇳", layout="wide")
 
-
-# ============================================================
-# REGINTEL V2 — CDSCO REGULATORY INTELLIGENCE PLATFORM
-# Scope: India / CDSCO V2
-# Human-in-the-loop. Official source is the regulatory authority.
-# ============================================================
-
-st.set_page_config(
-    page_title="RegIntel V2 | CDSCO Regulatory Intelligence",
-    page_icon="🇮🇳",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
+# -----------------------------
+# STYLE: simple RA workbench
+# -----------------------------
 st.markdown("""
 <style>
-html, body, [class*="css"] {
-    font-family: "IBM Plex Sans", sans-serif;
-}
-.block-container { padding-top: 1.2rem; }
-.small-muted { opacity: .72; font-size: .84rem; }
-.official {
-    border-left: 4px solid #2e7d32;
-    padding: .7rem 1rem;
-    background: rgba(46,125,50,.08);
-    border-radius: 6px;
-}
-.ai-box {
-    border-left: 4px solid #1565c0;
-    padding: .7rem 1rem;
-    background: rgba(21,101,192,.08);
-    border-radius: 6px;
-}
-.warning-box {
-    border-left: 4px solid #f57c00;
-    padding: .7rem 1rem;
-    background: rgba(245,124,0,.08);
-    border-radius: 6px;
-}
-.metric-card {
-    border: 1px solid var(--secondary-background-color);
-    border-radius: 8px;
-    padding: 12px;
-    background: var(--background-color);
-}
+.main .block-container {max-width: 1250px; padding-top: 1.2rem;}
+h1 {margin-bottom: .1rem;}
+.small {font-size:.82rem; color:#6b7280;}
+.card {border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; margin:8px 0; background:#fff;}
+.badge {display:inline-block; padding:3px 8px; border-radius:999px; font-size:.75rem; font-weight:600; margin-right:5px;}
+.high {background:#fee2e2; color:#991b1b;}
+.medium {background:#fef3c7; color:#92400e;}
+.low {background:#e5e7eb; color:#374151;}
+.review {background:#dbeafe; color:#1e40af;}
+.action {background:#dcfce7; color:#166534;}
 </style>
 """, unsafe_allow_html=True)
 
-
 # -----------------------------
-# Configuration
+# OFFICIAL CDSCO SOURCES
 # -----------------------------
-APP_VERSION = "2.0.0"
-DB_PATH = os.getenv("REGINTEL_DB_PATH", "regintel_master_cdsco_v2.db")
-REQUEST_TIMEOUT = int(os.getenv("REGINTEL_REQUEST_TIMEOUT", "30"))
-MAX_DOCUMENTS_PER_SOURCE = int(os.getenv("REGINTEL_MAX_DOCS_PER_SOURCE", "30"))
-
 SOURCES = {
-    "Gazette Notifications": {
-        "url": "https://www.cdsco.gov.in/opencms/opencms/en/Notifications/Gazette-Notifications/",
-        "doc_type": "Gazette Notification",
-        "priority": 1,
-    },
-    "Circulars": {
-        "url": "https://www.cdsco.gov.in/opencms/opencms/en/Notifications/Circulars/",
-        "doc_type": "Circular",
-        "priority": 1,
-    },
-    "Public Notices": {
-        "url": "https://www.cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/",
-        "doc_type": "Public Notice",
-        "priority": 1,
-    },
+    "Gazette Notifications": "https://www.cdsco.gov.in/opencms/opencms/en/Notifications/Gazette-Notifications/",
+    "Circulars": "https://www.cdsco.gov.in/opencms/opencms/en/Notifications/Circulars/",
+    "Public Notices": "https://www.cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/",
 }
 
-PRODUCTS = [
-    "APIs & Intermediates",
-    "Oral Solids & Liquids",
-    "Sterile Injectables & Parenterals",
-    "Biologics, Biosimilars & Vaccines",
-    "Medical Devices (Class A-D) & IVDs",
-    "Cosmetics & Dermaceuticals",
-    "AYUSH Formulations",
-]
-
-DOMAINS = [
-    "GMP, GLP & Manufacturing Compliance",
-    "Clinical Trials & New Drugs (NDCT 2019)",
-    "Pharmacovigilance & Safety (PvPI)",
-    "Import, Export & Registration (SUGAM)",
-    "Quality Control & Pharmacopoeia (IPC)",
-    "Medical Devices & Diagnostics",
-    "Cosmetics",
-    "Biologics",
-]
-
-DOMAIN_KEYWORDS = {
-    "GMP, GLP & Manufacturing Compliance": [
-        "gmp", "schedule m", "manufacture", "manufacturing", "quality system",
-        "inspection", "good manufacturing", "glp", "sterilization", "spurious",
-        "unapproved", "misbranded", "fabricated", "debarment"
-    ],
-    "Clinical Trials & New Drugs (NDCT 2019)": [
-        "ndct", "clinical trial", "new drug", "cro", "phase i", "phase ii",
-        "phase iii", "phase iv", "ethics committee", "ct-05", "ct-06", "ct-10",
-        "ba-be", "bioequivalence"
-    ],
-    "Pharmacovigilance & Safety (PvPI)": [
-        "pharmacovigilance", "pvpi", "adverse drug reaction", "adr",
-        "safety", "psur", "prescribing information", "signal"
-    ],
-    "Import, Export & Registration (SUGAM)": [
-        "sugam", "import", "export", "registration certificate", "marketing authorization",
-        "written confirmation", "licence", "license", "post approval change"
-    ],
-    "Quality Control & Pharmacopoeia (IPC)": [
-        "quality control", "testing", "pharmacopoeia", "ipc", "laboratory",
-        "government analyst", "test fee", "sampling", "specification"
-    ],
-    "Medical Devices & Diagnostics": [
-        "medical device", "ivd", "in vitro", "mdr 2017", "risk classification",
-        "device software", "diagnostic"
-    ],
-    "Cosmetics": [
-        "cosmetic", "cosmetics rules", "dermaceutical", "cosmetics rules 2020"
-    ],
-    "Biologics": [
-        "vaccine", "vaccines", "biosimilar", "biologics", "anti-sera",
-        "r-dna", "cell and gene", "blood product"
-    ],
+PRODUCTS = {
+    "Oral Solids": ["tablet", "tablets", "capsule", "capsules", "oral solid", "oral dosage", "oral"],
+    "Oral Liquids": ["syrup", "suspension", "solution", "oral liquid", "oral"],
+    "Sterile Injectables": ["injection", "injectable", "parenteral", "sterile", "infusion"],
+    "Biologics / Vaccines": ["biologic", "biosimilar", "vaccine", "serum", "recombinant", "monoclonal"],
+    "APIs": ["api", "active pharmaceutical ingredient", "bulk drug", "active ingredient"],
+    "Topical / Semisolid": ["cream", "ointment", "gel", "lotion", "topical", "dermal"],
+}
+TOPICS = {
+    "GMP / Manufacturing": ["schedule m", "gmp", "manufacturing", "good manufacturing", "quality system"],
+    "Clinical / New Drugs": ["clinical trial", "new drug", "ndct", "phase i", "phase ii", "phase iii", "phase iv"],
+    "Pharmacovigilance / Safety": ["pharmacovigilance", "adverse drug", "safety", "post marketing", "pvpi"],
+    "Import / Registration": ["import", "registration", "sugam", "marketing authorization", "permission"],
+    "Quality / FDC": ["fdc", "quality", "pharmacopoeia", "standard", "specification"],
 }
 
-PRODUCT_KEYWORDS = {
-    "APIs & Intermediates": ["api", "active pharmaceutical ingredient", "intermediate", "granules", "pellets"],
-    "Oral Solids & Liquids": ["tablet", "capsule", "oral", "syrup", "solution", "suspension", "dosage form", "fdc"],
-    "Sterile Injectables & Parenterals": ["sterile", "injectable", "parenteral", "injection", "aseptic"],
-    "Biologics, Biosimilars & Vaccines": ["vaccine", "biosimilar", "biologic", "anti-sera", "r-dna", "cell and gene"],
-    "Medical Devices (Class A-D) & IVDs": ["medical device", "ivd", "in-vitro", "diagnostic", "mdr-2017"],
-    "Cosmetics & Dermaceuticals": ["cosmetic", "dermaceutical", "cosmetics rules"],
-    "AYUSH Formulations": ["ayush", "ayurvedic", "siddha", "unani", "homoeopathic"],
+TRIGGERS = {
+    "Critical": ["ban", "prohibited", "suspension", "recall", "cancellation", "spurious", "unapproved"],
+    "High": ["mandatory", "shall", "amendment", "schedule m", "schedule h1", "new requirement",
+             "notification", "license", "compliance", "withdrawal"],
 }
 
-CRITICAL_TRIGGERS = [
-    "ban", "prohibition", "prohibited", "recall", "spurious", "unapproved",
-    "immediate effect", "mandatory", "shall", "schedule m", "debarment",
-    "cancellation", "suspended", "safety alert", "withdrawal"
-]
+DB = "regintel_v3.db"
 
-HIGH_TRIGGERS = [
-    "amendment", "notification", "new requirement", "revised", "mandatory",
-    "restriction", "licence", "license", "post approval", "psur", "clinical trial"
-]
+def db():
+    c = sqlite3.connect(DB, check_same_thread=False)
+    c.execute("""CREATE TABLE IF NOT EXISTS documents(
+        id TEXT PRIMARY KEY, source TEXT, title TEXT, published_date TEXT,
+        url TEXT, doc_type TEXT, raw_text TEXT, priority TEXT,
+        relevance INTEGER, matched_products TEXT, matched_topics TEXT,
+        status TEXT DEFAULT 'Needs Review', created_at TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS actions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, doc_id TEXT, action TEXT,
+        owner TEXT, due_date TEXT, status TEXT DEFAULT 'Open', created_at TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS audit(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, event TEXT, details TEXT
+    )""")
+    c.commit()
+    return c
 
+conn = db()
 
-# -----------------------------
-# Database
-# -----------------------------
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+def clean(x):
+    return re.sub(r"\s+", " ", str(x or "")).strip()
 
-
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS sources (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE,
-        authority TEXT,
-        url TEXT,
-        doc_type TEXT,
-        priority INTEGER,
-        active INTEGER DEFAULT 1,
-        last_checked TEXT,
-        last_success TEXT,
-        last_error TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS documents (
-        id TEXT PRIMARY KEY,
-        source_name TEXT,
-        authority TEXT,
-        doc_type TEXT,
-        title TEXT,
-        published_date TEXT,
-        official_url TEXT,
-        pdf_url TEXT,
-        official_ref TEXT,
-        discovered_at TEXT,
-        last_seen_at TEXT,
-        content_hash TEXT,
-        text_content TEXT,
-        extraction_status TEXT,
-        classification_status TEXT,
-        version_group TEXT,
-        previous_document_id TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS intelligence (
-        document_id TEXT PRIMARY KEY,
-        summary TEXT,
-        what_changed TEXT,
-        why_it_matters TEXT,
-        topic TEXT,
-        affected_products TEXT,
-        impact_area TEXT,
-        relevance_score INTEGER,
-        priority TEXT,
-        confidence REAL,
-        evidence_excerpt TEXT,
-        analysis_method TEXT,
-        ai_model TEXT,
-        generated_at TEXT,
-        FOREIGN KEY(document_id) REFERENCES documents(id)
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS reviews (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        document_id TEXT,
-        reviewer TEXT,
-        status TEXT,
-        justification TEXT,
-        reviewed_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS actions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        document_id TEXT,
-        title TEXT,
-        owner TEXT,
-        due_date TEXT,
-        priority TEXT,
-        status TEXT,
-        impact_area TEXT,
-        notes TEXT,
-        created_at TEXT,
-        completed_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS audit_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT,
-        user TEXT,
-        action TEXT,
-        record_id TEXT,
-        details TEXT
-    )
-    """)
-
-    for name, cfg in SOURCES.items():
-        cur.execute("""
-        INSERT OR IGNORE INTO sources
-        (name, authority, url, doc_type, priority)
-        VALUES (?, ?, ?, ?, ?)
-        """, (name, "CDSCO", cfg["url"], cfg["doc_type"], cfg["priority"]))
-
-    conn.commit()
-    return conn
-
-
-conn = init_db()
-
-
-def audit(action, record_id="SYSTEM", details="", user="RA Professional"):
-    conn.execute(
-        "INSERT INTO audit_logs(timestamp,user,action,record_id,details) VALUES(?,?,?,?,?)",
-        (datetime.now(timezone.utc).isoformat(), user, action, record_id, details)
-    )
-    conn.commit()
-
-
-# -----------------------------
-# HTTP / extraction
-# -----------------------------
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (compatible; RegIntel-CDSCO-Monitor/2.0; "
-        "+https://www.cdsco.gov.in/)"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-})
-
-
-def fetch(url):
-    response = SESSION.get(url, timeout=REQUEST_TIMEOUT, verify=True)
-    response.raise_for_status()
-    return response
-
-
-def normalize_text(text):
-    return re.sub(r"\s+", " ", text or "").strip()
-
-
-def parse_date(text):
-    text = normalize_text(text)
-    patterns = [
-        r"(\d{4})[-./](\d{2})[-./](\d{2})",
-        r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})",
-    ]
-    for p in patterns:
-        m = re.search(p, text)
-        if m:
-            y, mth, d = map(int, m.groups())
-            try:
-                return f"{y:04d}-{mth:02d}-{d:02d}"
-            except ValueError:
-                pass
-
-    month_map = {
-        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12
-    }
-    m = re.search(r"(\d{4})[- ]([A-Za-z]{3})[- ](\d{1,2})", text)
+def date_from_text(x):
+    m = re.search(r"(20\d{2}[-/.]\d{1,2}[-/.]\d{1,2})", x)
     if m:
-        y, mon, d = m.groups()
-        try:
-            return f"{int(y):04d}-{month_map[mon.lower()]:02d}-{int(d):02d}"
-        except Exception:
-            pass
+        return m.group(1).replace("/", "-").replace(".", "-")
     return ""
 
+def classify(title, text, source):
+    s = (title + " " + text).lower()
+    matched_products = [p for p, kws in PRODUCTS.items() if any(k in s for k in kws)]
+    matched_topics = [t for t, kws in TOPICS.items() if any(k in s for k in kws)]
 
-def extract_pdf_text(pdf_bytes):
-    if PdfReader is None:
-        return "", "pypdf-not-installed"
+    priority = "Low"
+    for level in ["Critical", "High"]:
+        if any(k in s for k in TRIGGERS[level]):
+            priority = level
+            break
+    if priority == "Low" and matched_topics:
+        priority = "Medium"
+
+    return priority, matched_products, matched_topics
+
+def relevance(title, text, source, selected_products, selected_topics):
+    s = (title + " " + text).lower()
+    score = 0
+    reasons = []
+
+    if selected_products:
+        product_hits = []
+        for p in selected_products:
+            hits = sum(1 for k in PRODUCTS[p] if k in s)
+            if hits:
+                product_hits.append(p)
+        if product_hits:
+            score += min(55, 20 + 10 * len(product_hits))
+            reasons.append("Product match: " + ", ".join(product_hits))
+    else:
+        score += 10
+
+    if selected_topics:
+        topic_hits = []
+        for t in selected_topics:
+            hits = sum(1 for k in TOPICS[t] if k in s)
+            if hits:
+                topic_hits.append(t)
+        if topic_hits:
+            score += min(35, 15 + 7 * len(topic_hits))
+            reasons.append("Topic match: " + ", ".join(topic_hits))
+    else:
+        score += 5
+
+    if source in ["Gazette Notifications", "Circulars"]:
+        score += 10
+    elif source == "Public Notices":
+        score += 5
+
+    return min(score, 100), reasons
+
+
+def extract_document_text(url):
+    """Read a linked official PDF when available; otherwise return empty text.
+    The official source page remains the authority."""
+    if not url or not url.lower().split("?")[0].endswith(".pdf") or PdfReader is None:
+        return ""
     try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 RegIntel/3.1"},
+                         timeout=30)
+        r.raise_for_status()
+        reader = PdfReader(BytesIO(r.content))
         pages = []
-        for idx, page in enumerate(reader.pages):
+        for page in reader.pages[:20]:
             try:
-                txt = page.extract_text() or ""
+                pages.append(clean(page.extract_text() or ""))
             except Exception:
-                txt = ""
-            if txt.strip():
-                pages.append(f"[Page {idx+1}]\n{txt}")
-        text = "\n\n".join(pages)
-        if not text.strip():
-            return "", "no-text-or-scanned-pdf"
-        return normalize_text(text), "success"
-    except Exception as exc:
-        return "", f"error: {exc}"
+                pass
+        return clean(" ".join(pages))[:50000]
+    except Exception:
+        return ""
 
-
-def find_pdf_link(anchor, page_url):
-    href = (anchor.get("href") or "").strip()
-    onclick = (anchor.get("onclick") or "").strip()
-    candidates = [href, onclick]
-
-    for value in candidates:
-        if not value:
-            continue
-        m = re.search(r"""['"]([^'"]+\.pdf(?:\?[^'"]*)?)['"]""", value, re.I)
-        if m:
-            return urljoin(page_url, m.group(1))
-        if ".pdf" in value.lower():
-            part = value[value.lower().find(".pdf")-300:]
-            m2 = re.search(r"""(https?://[^'"\s]+\.pdf[^'"\s]*)""", value, re.I)
-            if m2:
-                return m2.group(1)
-    return ""
-
-
-def parse_source_page(source_name, cfg, html):
-    soup = BeautifulSoup(html, "html.parser")
+def parse_source(name, url):
+    headers = {"User-Agent": "Mozilla/5.0 RegIntel/3.0"}
+    r = requests.get(url, headers=headers, timeout=25)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
     rows = []
 
-    # CDSCO pages are table-oriented. We scan table rows and also fall back
-    # to anchors containing PDF links.
+    # Prefer tables because CDSCO notification pages commonly expose lists as tables.
     for tr in soup.find_all("tr"):
-        cells = [normalize_text(td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
-        if not cells:
-            continue
+        cells = [clean(x.get_text(" ", strip=True)) for x in tr.find_all(["td","th"])]
+        links = [a.get("href") for a in tr.find_all("a", href=True)]
+        if len(cells) >= 2:
+            title = max(cells, key=len)
+            if title.lower() in ["title", "subject", "description"]:
+                continue
+            href = links[0] if links else url
+            if href.startswith("/"):
+                href = "https://www.cdsco.gov.in" + href
+            elif href.startswith("http") is False:
+                href = url.rstrip("/") + "/" + href.lstrip("/")
+            date = next((date_from_text(c) for c in cells if date_from_text(c)), "")
+            rows.append({"source": name, "title": title, "published_date": date,
+                         "url": href, "doc_type": name.rstrip("s")})
+    # Fallback: collect meaningful linked headings if table parsing found nothing.
+    if not rows:
+        for a in soup.find_all("a", href=True):
+            txt = clean(a.get_text(" ", strip=True))
+            if len(txt) >= 18:
+                href = a["href"]
+                if href.startswith("/"):
+                    href = "https://www.cdsco.gov.in" + href
+                elif not href.startswith("http"):
+                    href = url.rstrip("/") + "/" + href.lstrip("/")
+                rows.append({"source": name, "title": txt, "published_date": date_from_text(txt),
+                              "url": href, "doc_type": name.rstrip("s")})
+    # Deduplicate
+    out, seen = [], set()
+    for x in rows:
+        key = (x["title"].lower(), x["published_date"], x["url"])
+        if key not in seen:
+            seen.add(key); out.append(x)
+    return out[:150]
 
-        row_text = " | ".join(cells)
-        anchors = tr.find_all("a")
-        pdf_url = ""
-        official_url = cfg["url"]
-
-        for a in anchors:
-            pdf = find_pdf_link(a, cfg["url"])
-            if pdf:
-                pdf_url = pdf
-                break
-
-        title = cells[1] if len(cells) >= 2 else (cells[0] if cells else "")
-        if title.lower() in {"title", "download pdf"}:
-            continue
-        if len(title) < 8:
-            continue
-
-        published = ""
-        for cell in cells:
-            candidate = parse_date(cell)
-            if candidate:
-                published = candidate
-                break
-
-        official_ref = ""
-        ref_match = re.search(r"\b(?:G\.S\.R\.|S\.O\.|F\.No\.|File No\.)\s*[^|,]+", row_text, re.I)
-        if ref_match:
-            official_ref = normalize_text(ref_match.group(0))
-
-        # Keep official page URL even if PDF discovery fails.
-        canonical_key = f"{source_name}|{title}|{published}|{pdf_url or official_url}"
-        doc_id = "CDSCO-" + hashlib.sha256(canonical_key.encode("utf-8")).hexdigest()[:20]
-
-        rows.append({
-            "id": doc_id,
-            "source_name": source_name,
-            "authority": "CDSCO",
-            "doc_type": cfg["doc_type"],
-            "title": title,
-            "published_date": published,
-            "official_url": official_url,
-            "pdf_url": pdf_url,
-            "official_ref": official_ref,
-        })
-
-    # De-duplicate within page.
-    seen = set()
-    unique = []
-    for row in rows:
-        key = (row["title"].lower(), row["published_date"], row["pdf_url"])
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(row)
-
-    return unique[:MAX_DOCUMENTS_PER_SOURCE]
-
-
-def classify_text(title, text):
-    combined = normalize_text(f"{title} {text}").lower()
-    scores = {}
-    for domain, words in DOMAIN_KEYWORDS.items():
-        scores[domain] = sum(1 for w in words if w.lower() in combined)
-
-    best_domain = max(scores, key=scores.get) if scores else "Unclassified"
-    if scores.get(best_domain, 0) == 0:
-        best_domain = "General CDSCO Regulatory"
-
-    products = []
-    for product, words in PRODUCT_KEYWORDS.items():
-        if any(w.lower() in combined for w in words):
-            products.append(product)
-
-    return best_domain, products
-
-
-def score_relevance(title, text, selected_products, selected_domains):
-    combined = normalize_text(f"{title} {text}").lower()
-
-    domain_hits = []
-    for domain in selected_domains:
-        hits = sum(1 for w in DOMAIN_KEYWORDS.get(domain, []) if w.lower() in combined)
-        if hits:
-            domain_hits.append((domain, hits))
-
-    product_hits = []
-    for product in selected_products:
-        hits = sum(1 for w in PRODUCT_KEYWORDS.get(product, []) if w.lower() in combined)
-        if hits:
-            product_hits.append((product, hits))
-
-    critical_hits = sum(1 for x in CRITICAL_TRIGGERS if x in combined)
-    high_hits = sum(1 for x in HIGH_TRIGGERS if x in combined)
-
-    score = 20
-    score += min(30, sum(h for _, h in domain_hits) * 5)
-    score += min(25, sum(h for _, h in product_hits) * 5)
-    score += min(20, critical_hits * 7)
-    score += min(10, high_hits * 2)
-
-    score = max(0, min(100, score))
-
-    if score >= 85:
-        priority = "Critical"
-    elif score >= 70:
-        priority = "High"
-    elif score >= 50:
-        priority = "Medium"
-    else:
-        priority = "Low"
-
-    return score, priority, [x[0] for x in domain_hits], [x[0] for x in product_hits]
-
-
-def heuristic_summary(title, text):
-    text = normalize_text(text)
-    if not text:
-        return "No document text was extracted. Review the official source manually."
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    useful = [s for s in sentences if len(s) > 50][:3]
-    return " ".join(useful)[:1200] if useful else text[:1200]
-
-
-def evidence_excerpt(text):
-    if not text:
-        return ""
-    # Prefer passages containing regulatory trigger words.
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    for s in sentences:
-        low = s.lower()
-        if any(k in low for k in ["shall", "prohibit", "mandatory", "notification", "amend", "requirement"]):
-            return s[:1000]
-    return sentences[0][:1000] if sentences else text[:1000]
-
-
-def download_document(pdf_url):
-    if not pdf_url:
-        return b"", "no-pdf-url"
-    try:
-        r = fetch(pdf_url)
-        content_type = r.headers.get("content-type", "").lower()
-        if "pdf" not in content_type and not pdf_url.lower().endswith(".pdf"):
-            # Still allow content if it begins with the PDF magic bytes.
-            if not r.content.startswith(b"%PDF"):
-                return b"", f"not-pdf:{content_type}"
-        return r.content, "success"
-    except Exception as exc:
-        return b"", f"download-error:{exc}"
-
-
-# -----------------------------
-# Optional AI
-# -----------------------------
-def get_ai_client():
-    if OpenAI is None:
-        return None
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        return None
-    return OpenAI(api_key=key)
-
-
-def ai_analyze(title, source_text, relevance_context):
-    client = get_ai_client()
-    if client is None:
-        return None
-
-    prompt = f"""
-You are assisting a pharmaceutical Regulatory Affairs professional.
-Use ONLY the supplied regulatory document text. Do not invent requirements.
-Return JSON with:
-summary, what_changed, why_it_matters, impact_area, uncertainty.
-If the text does not establish a point, say "Not established from source text".
-Clearly distinguish source facts from interpretation.
-
-Title: {title}
-Company relevance context: {relevance_context}
-
-Document text:
-{source_text[:18000]}
-"""
-    try:
-        response = client.chat.completions.create(
-            model=os.getenv("REGINTEL_AI_MODEL", "gpt-5-mini"),
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception:
-        return None
-
-
-# -----------------------------
-# Synchronization
-# -----------------------------
-def sync_source(source_name, selected_products, selected_domains, download_pdfs=True, use_ai=False):
-    cfg = SOURCES[source_name]
-    checked = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        "UPDATE sources SET last_checked=?, last_error=NULL WHERE name=?",
-        (checked, source_name)
-    )
-    conn.commit()
-
-    try:
-        response = fetch(cfg["url"])
-        records = parse_source_page(source_name, cfg, response.text)
-    except Exception as exc:
-        conn.execute(
-            "UPDATE sources SET last_error=? WHERE name=?",
-            (str(exc)[:1000], source_name)
-        )
-        conn.commit()
-        audit("SOURCE_SYNC_FAILED", source_name, str(exc)[:1000])
-        return {"source": source_name, "found": 0, "new": 0, "updated": 0, "failed": 1, "error": str(exc)}
+def sync(selected_products, selected_topics):
+    found = []
+    errors = []
+    for name, url in SOURCES.items():
+        try:
+            found.extend(parse_source(name, url))
+        except Exception as e:
+            errors.append(f"{name}: {e}")
 
     new_count = 0
-    updated_count = 0
-    failed_docs = 0
+    relevant_count = 0
 
-    for record in records:
-        existing = conn.execute(
-            "SELECT id, content_hash, text_content FROM documents WHERE id=?",
-            (record["id"],)
-        ).fetchone()
+    for item in found:
+        # Read official PDF text where a PDF is directly linked.
+        raw_text = extract_document_text(item["url"])
+        analysis_text = clean(item["title"] + " " + raw_text)
 
-        text = ""
-        extraction_status = "not-attempted"
-        content_hash = ""
+        rid = hashlib.sha256(
+            (item["source"] + "|" + item["title"] + "|" +
+             item["published_date"] + "|" + item["url"]).encode()
+        ).hexdigest()[:24]
 
-        if download_pdfs and record["pdf_url"]:
-            pdf_bytes, dl_status = download_document(record["pdf_url"])
-            if pdf_bytes:
-                text, extraction_status = extract_pdf_text(pdf_bytes)
-                content_hash = hashlib.sha256(pdf_bytes).hexdigest()
-            else:
-                extraction_status = dl_status
-
-        # If the record already exists, retain existing text when a fresh
-        # download cannot be performed.
-        if existing and not text:
-            text = existing[2] or ""
-            content_hash = existing[1] or ""
-
-        document_text = text[:500000]
-
-        domain, products = classify_text(record["title"], document_text)
-        score, priority, matched_domains, matched_products = score_relevance(
-            record["title"], document_text, selected_products, selected_domains
+        priority, mp, mt = classify(item["title"], analysis_text, item["source"])
+        score, reasons = relevance(
+            item["title"], analysis_text, item["source"],
+            selected_products, selected_topics
         )
 
-        summary = heuristic_summary(record["title"], document_text)
-        evidence = evidence_excerpt(document_text)
-        analysis_method = "rule-based"
-        ai_model = ""
+        # Relevant = enough evidence of a company/product/topic relationship.
+        status = "Needs Review" if score >= 40 else "Informational"
 
-        if use_ai and document_text:
-            ai_result = ai_analyze(
-                record["title"],
-                document_text,
-                f"Products: {selected_products}; Domains: {selected_domains}"
-            )
-            if ai_result:
-                summary = ai_result.get("summary") or summary
-                what_changed = ai_result.get("what_changed") or "Not established from source text."
-                why_matters = ai_result.get("why_it_matters") or "Not established from source text."
-                impact_area = ai_result.get("impact_area") or domain
-                analysis_method = "AI + rules"
-                ai_model = os.getenv("REGINTEL_AI_MODEL", "gpt-5-mini")
-            else:
-                what_changed = "Automatic change interpretation not established; RA review required."
-                why_matters = "Review official document and evidence before making a regulatory determination."
-                impact_area = domain
-        else:
-            what_changed = "Automatic change interpretation not established; RA review required."
-            why_matters = "Review official document and evidence before making a regulatory determination."
-            impact_area = domain
+        cur = conn.execute("SELECT id FROM documents WHERE id=?", (rid,))
+        exists = cur.fetchone() is not None
 
-        if not existing:
-            conn.execute("""
-                INSERT INTO documents(
-                    id, source_name, authority, doc_type, title, published_date,
-                    official_url, pdf_url, official_ref, discovered_at, last_seen_at,
-                    content_hash, text_content, extraction_status,
-                    classification_status, version_group, previous_document_id
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                record["id"], record["source_name"], record["authority"],
-                record["doc_type"], record["title"], record["published_date"],
-                record["official_url"], record["pdf_url"], record["official_ref"],
-                checked, checked, content_hash, document_text, extraction_status,
-                "classified", hashlib.sha256(record["title"].lower().encode()).hexdigest()[:16],
-                None
-            ))
+        if not exists:
+            conn.execute("""INSERT INTO documents
+                (id,source,title,published_date,url,doc_type,raw_text,priority,relevance,
+                 matched_products,matched_topics,status,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (rid, item["source"], item["title"], item["published_date"],
+                 item["url"], item["doc_type"], analysis_text, priority, score,
+                 "; ".join(mp), "; ".join(mt), status,
+                 datetime.now(timezone.utc).isoformat()))
             new_count += 1
-            audit("DOCUMENT_DISCOVERED", record["id"], f"{source_name}: {record['title']}")
-        else:
-            old_hash = existing[1] or ""
-            if content_hash and old_hash and content_hash != old_hash:
-                updated_count += 1
-                conn.execute("""
-                    UPDATE documents SET last_seen_at=?, content_hash=?, text_content=?,
-                    extraction_status=?, pdf_url=? WHERE id=?
-                """, (checked, content_hash, document_text, extraction_status,
-                      record["pdf_url"], record["id"]))
-                audit("DOCUMENT_UPDATED", record["id"], "Document content hash changed.")
-            else:
-                conn.execute(
-                    "UPDATE documents SET last_seen_at=? WHERE id=?",
-                    (checked, record["id"])
-                )
 
-        conn.execute("""
-            INSERT INTO intelligence(
-                document_id, summary, what_changed, why_it_matters, topic,
-                affected_products, impact_area, relevance_score, priority,
-                confidence, evidence_excerpt, analysis_method, ai_model, generated_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(document_id) DO UPDATE SET
-                summary=excluded.summary,
-                what_changed=excluded.what_changed,
-                why_it_matters=excluded.why_it_matters,
-                topic=excluded.topic,
-                affected_products=excluded.affected_products,
-                impact_area=excluded.impact_area,
-                relevance_score=excluded.relevance_score,
-                priority=excluded.priority,
-                confidence=excluded.confidence,
-                evidence_excerpt=excluded.evidence_excerpt,
-                analysis_method=excluded.analysis_method,
-                ai_model=excluded.ai_model,
-                generated_at=excluded.generated_at
-        """, (
-            record["id"], summary, what_changed, why_matters, domain,
-            ", ".join(products or matched_products), impact_area, score, priority,
-            0.85 if analysis_method == "AI + rules" else 0.65,
-            evidence, analysis_method, ai_model, checked
-        ))
+        if score >= 40:
+            relevant_count += 1
 
     conn.execute(
-        "UPDATE sources SET last_success=?, last_error=NULL WHERE name=?",
-        (checked, source_name)
+        "INSERT INTO audit(timestamp,event,details) VALUES(?,?,?)",
+        (datetime.now(timezone.utc).isoformat(), "CDSCO_SYNC",
+         f"Checked {len(found)} source records; {relevant_count} matched current profile; {new_count} new records stored.")
     )
     conn.commit()
-    audit("SOURCE_SYNC_COMPLETED", source_name,
-          f"Found={len(records)}, New={new_count}, Updated={updated_count}, FailedDocs={failed_docs}")
-
-    return {
-        "source": source_name,
-        "found": len(records),
-        "new": new_count,
-        "updated": updated_count,
-        "failed": failed_docs,
-        "error": "",
-    }
-
-
-def sync_all(selected_sources, selected_products, selected_domains, download_pdfs=True, use_ai=False):
-    results = []
-    for source in selected_sources:
-        results.append(sync_source(
-            source, selected_products, selected_domains,
-            download_pdfs=download_pdfs, use_ai=use_ai
-        ))
-        time.sleep(0.5)
-    return results
-
+    return len(found), relevant_count, new_count, errors
 
 # -----------------------------
-# Data helpers
-# -----------------------------
-def load_feed():
-    query = """
-    SELECT
-        d.id, d.source_name, d.authority, d.doc_type, d.title,
-        d.published_date, d.official_url, d.pdf_url, d.official_ref,
-        d.extraction_status, d.last_seen_at,
-        i.summary, i.what_changed, i.why_it_matters, i.topic,
-        i.affected_products, i.impact_area, i.relevance_score,
-        i.priority, i.confidence, i.evidence_excerpt,
-        i.analysis_method, i.ai_model
-    FROM documents d
-    LEFT JOIN intelligence i ON i.document_id = d.id
-    ORDER BY COALESCE(d.published_date, '') DESC, d.discovered_at DESC
-    """
-    return pd.read_sql_query(query, conn)
-
-
-def load_reviews():
-    return pd.read_sql_query(
-        "SELECT * FROM reviews ORDER BY reviewed_at DESC", conn
-    )
-
-
-# -----------------------------
-# Sidebar
+# SIDEBAR: ONLY REAL PROFILE INPUTS
 # -----------------------------
 with st.sidebar:
-    st.markdown("## 🏢 Operating Entity")
-    company_name = st.text_input(
-        "Pharmaceutical Organization",
-        value="Meridian Pharmaceuticals Ltd."
-    )
-
-    st.markdown("---")
-    st.markdown("### 🇮🇳 CDSCO Monitoring")
-
+    st.title("RegIntel")
+    st.caption("AI-assisted Regulatory Intelligence")
+    company = st.text_input("Company", "My Pharmaceutical Company")
+    st.divider()
     selected_products = st.multiselect(
-        "Active Manufacturing / Product Lines",
-        PRODUCTS,
-        default=PRODUCTS[:3],
+        "Products / manufacturing",
+        list(PRODUCTS.keys()),
+        default=["Oral Solids"]
     )
-
-    selected_domains = st.multiselect(
-        "Regulatory Domains",
-        DOMAINS,
-        default=DOMAINS[:5],
+    selected_topics = st.multiselect(
+        "Regulatory interests",
+        list(TOPICS.keys()),
+        default=["GMP / Manufacturing", "Clinical / New Drugs"]
     )
+    st.divider()
+    st.caption("V3 scope: India • CDSCO")
+    st.caption("Official source = authority. RegIntel = decision support.")
 
-    selected_sources = st.multiselect(
-        "Official Sources to Monitor",
-        list(SOURCES.keys()),
-        default=list(SOURCES.keys()),
+# -----------------------------
+# MAIN
+# -----------------------------
+st.title("🇮🇳 RegIntel")
+st.write("**Show me what matters to my company — not everything the regulator publishes.**")
+st.caption(f"{company}  •  India / CDSCO  •  Products: {', '.join(selected_products) or 'None'}")
+
+if st.button("🔄 Check CDSCO for new updates", type="primary"):
+    with st.spinner("Checking official CDSCO sources..."):
+        total, relevant, new, errors = sync(selected_products, selected_topics)
+    st.success(f"Checked {total} CDSCO records • {relevant} matched your current profile • {new} new records stored.")
+    for e in errors:
+        st.warning(e)
+
+df = pd.read_sql_query("SELECT * FROM documents ORDER BY published_date DESC, created_at DESC", conn)
+
+# Re-score current database against current profile on every rerun.
+if not df.empty:
+    def current_score(row):
+        score, _ = relevance(
+            row["title"],
+            row["raw_text"],
+            row["source"],
+            selected_products,
+            selected_topics
+        )
+        return score
+    df["current_relevance"] = df.apply(current_score, axis=1)
+
+    # Only relevant items enter the intelligence feed.
+    feed = df[df["current_relevance"] >= 40].copy()
+    feed["current_priority"] = feed.apply(
+        lambda r: classify(r["title"], r["raw_text"], r["source"])[0], axis=1
     )
-
-    download_pdfs = st.checkbox(
-        "Download and extract PDFs",
-        value=True,
-        help="Downloads discovered official PDFs for evidence and analysis."
-    )
-
-    ai_enabled = st.checkbox(
-        "Enable AI analysis (optional)",
-        value=False,
-        help="Requires OPENAI_API_KEY in the deployment environment."
-    )
-
-    st.markdown("---")
-    st.caption(f"RegIntel V{APP_VERSION}")
-    st.caption("Official source = authority. AI/rules = interpretation. RA = final determination.")
-
-
-# -----------------------------
-# Header
-# -----------------------------
-st.title("🇮🇳 CDSCO Regulatory Intelligence Terminal")
-st.caption(
-    f"Operating Entity: **{company_name}**  |  "
-    f"Scope: **India / CDSCO**  |  "
-    f"Version: **{APP_VERSION}**"
-)
-
-tabs = st.tabs([
-    "📊 Intelligence Dashboard",
-    "🔄 Live Source Monitor",
-    "🗄️ Regulatory Registry",
-    "🧠 Intelligence",
-    "⚖️ RA Review & Actions",
-    "📋 Audit Trail",
-    "⚙️ System Status",
-])
-
-
-# -----------------------------
-# Dashboard
-# -----------------------------
-with tabs[0]:
-    df = load_feed()
-
-    if df.empty:
-        st.info("No documents are currently stored. Run a live synchronization from the Source Monitor.")
-    else:
-        high = len(df[df["priority"].isin(["Critical", "High"])])
-        review_count = len(df[df["id"].isin(
-            load_reviews().query("status == 'Needs Review'")["document_id"].tolist()
-        )]) if not load_reviews().empty else 0
-        action_count = len(df[df["id"].isin(
-            pd.read_sql_query("SELECT document_id FROM actions WHERE status != 'Completed'", conn)["document_id"].tolist()
-        )])
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Regulatory Documents", len(df))
-        c2.metric("Critical / High", high)
-        c3.metric("Needs RA Review", review_count)
-        c4.metric("Open Actions", action_count)
-
-        st.markdown("### Regulatory Intelligence Feed")
-
-        search = st.text_input(
-            "Search",
-            placeholder="e.g. Schedule M, PSUR, FDC, SUGAM, medical device..."
-        )
-
-        view = df.copy()
-        if search:
-            mask = view.astype(str).apply(
-                lambda col: col.str.contains(search, case=False, na=False)
-            ).any(axis=1)
-            view = view[mask]
-
-        priority_filter = st.multiselect(
-            "Priority",
-            ["Critical", "High", "Medium", "Low"],
-            default=["Critical", "High", "Medium", "Low"]
-        )
-        view = view[view["priority"].isin(priority_filter)]
-
-        for _, item in view.head(50).iterrows():
-            with st.expander(
-                f"{item['priority']} | {item['title']} | {item['published_date'] or 'Date not extracted'}"
-            ):
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Relevance", f"{int(item['relevance_score'] or 0)}/100")
-                c2.metric("Confidence", f"{float(item['confidence'] or 0):.0%}")
-                c3.write(f"**Method:** {item['analysis_method'] or 'Not analyzed'}")
-
-                st.markdown(
-                    f"**Topic:** {item['topic'] or 'Unclassified'}  \n"
-                    f"**Affected products:** {item['affected_products'] or 'Not established'}  \n"
-                    f"**Impact area:** {item['impact_area'] or 'Not established'}"
-                )
-
-                st.markdown("#### Summary")
-                st.write(item["summary"] or "No summary available.")
-
-                st.markdown("#### What Changed?")
-                st.write(item["what_changed"] or "Not established from source text.")
-
-                st.markdown("#### Why It Matters")
-                st.write(item["why_it_matters"] or "Not established from source text.")
-
-                st.markdown("#### Official Evidence")
-                st.markdown(
-                    f'<div class="official"><b>Official source:</b> {item["source_name"]}<br>'
-                    f'<b>Reference:</b> {item["official_ref"] or "Not extracted"}<br>'
-                    f'<b>Evidence:</b> {item["evidence_excerpt"] or "No extractable evidence; open official source."}</div>',
-                    unsafe_allow_html=True
-                )
-
-                st.markdown(
-                    f"[Open official CDSCO source]({item['official_url']})"
-                )
-                if item["pdf_url"]:
-                    st.markdown(f"[Open official PDF]({item['pdf_url']})")
-
-
-# -----------------------------
-# Source Monitor
-# -----------------------------
-with tabs[1]:
-    st.subheader("🔄 Live CDSCO Source Monitor")
-
-    st.markdown("""
-    <div class="official">
-    <b>Monitoring principle:</b> the application retrieves information from official CDSCO
-    publication pages. The official document remains the source of regulatory truth.
-    </div>
-    """, unsafe_allow_html=True)
-
-    source_df = pd.read_sql_query(
-        "SELECT name, authority, doc_type, url, active, last_checked, last_success, last_error FROM sources ORDER BY priority, name",
-        conn
-    )
-
-    st.dataframe(source_df, use_container_width=True, hide_index=True)
-
-    if st.button("🚀 Sync Selected CDSCO Sources Now", type="primary", use_container_width=True):
-        with st.spinner("Checking official CDSCO publication pages and extracting available documents..."):
-            results = sync_all(
-                selected_sources,
-                selected_products,
-                selected_domains,
-                download_pdfs=download_pdfs,
-                use_ai=ai_enabled,
-            )
-
-        st.success("Synchronization completed.")
-        st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
-        st.rerun()
-
-    st.markdown("### Current official source coverage")
-    for name in selected_sources:
-        st.markdown(
-            f"- **{name}** — [{SOURCES[name]['url']}]({SOURCES[name]['url']})"
-        )
-
-    st.info(
-        "For a cloud deployment, scheduled/background monitoring should be added separately. "
-        "The button above performs an on-demand live synchronization."
-    )
-
-
-# -----------------------------
-# Registry
-# -----------------------------
-with tabs[2]:
-    st.subheader("🗄️ Regulatory Master Registry")
-
-    df = load_feed()
-    if df.empty:
-        st.info("Registry is empty.")
-    else:
-        cols = [
-            "id", "source_name", "doc_type", "official_ref",
-            "title", "published_date", "extraction_status",
-            "last_seen_at"
-        ]
-        st.dataframe(df[cols], use_container_width=True, hide_index=True)
-
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download Registry CSV",
-            csv,
-            "regintel_registry.csv",
-            "text/csv"
-        )
-
-
-# -----------------------------
-# Intelligence
-# -----------------------------
-with tabs[3]:
-    st.subheader("🧠 Regulatory Intelligence Analysis")
-
-    df = load_feed()
-    if df.empty:
-        st.info("Run a source synchronization first.")
-    else:
-        doc_id = st.selectbox(
-            "Select regulatory document",
-            df["id"].tolist(),
-            format_func=lambda x: df.loc[df["id"] == x, "title"].iloc[0]
-        )
-
-        item = df[df["id"] == doc_id].iloc[0]
-
-        st.markdown("### Official Information")
-        st.write(f"**Title:** {item['title']}")
-        st.write(f"**Authority:** {item['authority']}")
-        st.write(f"**Document type:** {item['doc_type']}")
-        st.write(f"**Published:** {item['published_date']}")
-        st.write(f"**Official reference:** {item['official_ref'] or 'Not extracted'}")
-
-        st.markdown("### System Interpretation")
-        st.markdown(
-            f'<div class="ai-box"><b>Summary:</b><br>{item["summary"] or "Not available"}'
-            f'<br><br><b>What changed:</b><br>{item["what_changed"] or "Not established"}'
-            f'<br><br><b>Why it matters:</b><br>{item["why_it_matters"] or "Not established"}'
-            f'<br><br><b>Relevance:</b> {int(item["relevance_score"] or 0)}/100'
-            f'<br><b>Priority:</b> {item["priority"]}'
-            f'<br><b>Method:</b> {item["analysis_method"] or "Not analyzed"}</div>',
-            unsafe_allow_html=True
-        )
-
-        st.markdown("### Evidence")
-        st.write(item["evidence_excerpt"] or "No evidence excerpt available.")
-
-        st.warning(
-            "System interpretation is decision support only. Final applicability, compliance "
-            "and regulatory action must be determined by a qualified RA professional."
-        )
-
-
-# -----------------------------
-# RA Review & Actions
-# -----------------------------
-with tabs[4]:
-    st.subheader("⚖️ Human RA Governance")
-
-    df = load_feed()
-    if df.empty:
-        st.info("No documents available.")
-    else:
-        doc_id = st.selectbox(
-            "Document for RA review",
-            df["id"].tolist(),
-            format_func=lambda x: df.loc[df["id"] == x, "title"].iloc[0],
-            key="review_doc"
-        )
-        item = df[df["id"] == doc_id].iloc[0]
-
-        existing_review = conn.execute(
-            "SELECT status, justification, reviewer FROM reviews WHERE document_id=? ORDER BY id DESC LIMIT 1",
-            (doc_id,)
-        ).fetchone()
-
-        statuses = [
-            "Needs Review",
-            "Action Required",
-            "Informational",
-            "Not Relevant",
-        ]
-
-        default_status = existing_review[0] if existing_review else "Needs Review"
-        status = st.selectbox(
-            "RA Determination",
-            statuses,
-            index=statuses.index(default_status) if default_status in statuses else 0
-        )
-        reviewer = st.text_input(
-            "Reviewer",
-            value=existing_review[2] if existing_review else "RA Professional"
-        )
-        justification = st.text_area(
-            "Technical Justification",
-            value=existing_review[1] if existing_review else ""
-        )
-
-        if st.button("Commit RA Determination", type="primary"):
-            now = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                "INSERT INTO reviews(document_id,reviewer,status,justification,reviewed_at) VALUES(?,?,?,?,?)",
-                (doc_id, reviewer, status, justification, now)
-            )
-            audit(
-                "RA_GOVERNANCE_REVIEW",
-                doc_id,
-                f"Status={status}; Reviewer={reviewer}"
-            )
-            conn.commit()
-            st.success("RA determination recorded.")
-
-        st.markdown("---")
-        st.markdown("### Create Action")
-
-        if status == "Action Required":
-            action_title = st.text_input(
-                "Action title",
-                value=f"Assess applicability of: {item['title']}"
-            )
-            owner = st.text_input("Action owner", value="Regulatory Affairs")
-            due_date = st.date_input("Due date")
-            action_priority = st.selectbox(
-                "Action priority",
-                ["Critical", "High", "Medium", "Low"],
-                index=1 if item["priority"] == "High" else 0 if item["priority"] == "Critical" else 2
-            )
-            impact_area = st.text_input(
-                "Impact area",
-                value=item["impact_area"] or ""
-            )
-            notes = st.text_area("Action notes")
-
-            if st.button("Create Action"):
-                now = datetime.now(timezone.utc).isoformat()
-                conn.execute("""
-                    INSERT INTO actions(
-                        document_id,title,owner,due_date,priority,status,
-                        impact_area,notes,created_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?)
-                """, (
-                    doc_id, action_title, owner, str(due_date),
-                    action_priority, "New", impact_area, notes, now
-                ))
-                audit("ACTION_CREATED", doc_id, action_title)
-                conn.commit()
-                st.success("Action created.")
-
-        st.markdown("### Open Actions")
-        actions = pd.read_sql_query(
-            "SELECT * FROM actions ORDER BY created_at DESC", conn
-        )
-        if actions.empty:
-            st.info("No actions created.")
-        else:
-            st.dataframe(actions, use_container_width=True, hide_index=True)
-
-
-# -----------------------------
-# Audit
-# -----------------------------
-with tabs[5]:
-    st.subheader("📋 Audit Trail & Verification")
-
-    logs = pd.read_sql_query(
-        "SELECT timestamp,user,action,record_id,details FROM audit_logs ORDER BY id DESC",
-        conn
-    )
-    st.dataframe(logs, use_container_width=True, hide_index=True)
-
-    st.markdown("### Review History")
-    reviews = load_reviews()
-    if reviews.empty:
-        st.info("No RA reviews recorded yet.")
-    else:
-        st.dataframe(reviews, use_container_width=True, hide_index=True)
-
-
-# -----------------------------
-# System status
-# -----------------------------
-with tabs[6]:
-    st.subheader("⚙️ System Status")
-
-    total_docs = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-    extracted = conn.execute(
-        "SELECT COUNT(*) FROM documents WHERE extraction_status='success'"
-    ).fetchone()[0]
-    intelligence = conn.execute(
-        "SELECT COUNT(*) FROM intelligence"
-    ).fetchone()[0]
-    actions = conn.execute(
-        "SELECT COUNT(*) FROM actions WHERE status != 'Completed'"
-    ).fetchone()[0]
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Documents", total_docs)
-    c2.metric("Text Extracted", extracted)
-    c3.metric("Intelligence Records", intelligence)
-    c4.metric("Open Actions", actions)
-
-    st.markdown("### AI configuration")
-    if get_ai_client():
-        st.success("Optional AI engine is configured.")
-    else:
-        st.info(
-            "AI engine is not configured. The platform currently uses deterministic "
-            "rule-based classification/relevance and evidence extraction."
-        )
-
-    st.markdown("### Scope")
-    st.write("Current implementation: India / CDSCO.")
-    st.write("EU/EMA integration is intentionally not enabled in this V2 build.")
-
-    st.markdown("### Important deployment note")
-    st.warning(
-        "SQLite is suitable for a prototype/demo. For persistent multi-user production "
-        "deployment, migrate the database to PostgreSQL and add authentication, backups "
-        "and scheduled background jobs."
-    )
-
-    st.markdown("### Regulatory governance")
-    st.write(
-        "This system is decision support. It does not independently determine legal "
-        "compliance or replace qualified Regulatory Affairs review."
-    )
+else:
+    feed = df.copy()
+
+# KPI row
+total_found = len(df)
+relevant = len(feed)
+high = len(feed[feed["current_priority"].isin(["Critical","High"])]) if not feed.empty else 0
+review = len(feed[feed["status"] == "Needs Review"]) if not feed.empty else 0
+open_actions = pd.read_sql_query("SELECT * FROM actions WHERE status != 'Completed'", conn)
+actions_n = len(open_actions)
+
+c1,c2,c3,c4,c5 = st.columns(5)
+c1.metric("CDSCO records found", total_found)
+c2.metric("Relevant to me", relevant)
+c3.metric("Critical / High", high)
+c4.metric("Needs RA review", review)
+c5.metric("Open actions", actions_n)
+
+st.divider()
+st.subheader("Relevant Regulatory Updates")
+
+if feed.empty:
+    st.info("No relevant CDSCO updates for the current product and regulatory-interest profile. Change the profile or check CDSCO again.")
+else:
+    feed = feed.sort_values(["current_priority","current_relevance","published_date"],
+                            key=lambda s: s.map({"Critical":0,"High":1,"Medium":2,"Low":3}) if s.name=="current_priority" else s,
+                            ascending=[True,False,False])
+    for _, row in feed.head(50).iterrows():
+        p = row["current_priority"]
+        cls = p.lower()
+        with st.expander(f"{'🔴' if p=='Critical' else '🟠' if p=='High' else '🟡' if p=='Medium' else '⚪'} {row['title']}"):
+            st.markdown(
+                f"<span class='badge {cls}'>{p}</span>"
+                f"<span class='badge review'>{row['current_relevance']}/100 relevant</span>"
+                f"<span class='small'>{row['source']} • {row['published_date']}</span>",
+                unsafe_allow_html=True)
+            mp = row.get("matched_products","") or "Current profile match"
+            mt = row.get("matched_topics","") or "Regulatory relevance"
+            st.write(f"**Why it is here:** {mp} • {mt}")
+            st.write("**RegIntel interpretation:** This item matches your current company/product/regulatory profile and should be assessed by RA.")
+            st.write(f"**Status:** {row['status']}")
+            st.link_button("Open official CDSCO source", row["url"])
+            col1,col2,col3 = st.columns([1,1,2])
+            with col1:
+                if st.button("Mark Action Required", key=f"act_{row['id']}"):
+                    conn.execute("UPDATE documents SET status='Action Required' WHERE id=?", (row["id"],))
+                    conn.execute("INSERT INTO actions(doc_id,action,owner,status,created_at) VALUES(?,?,?,?,?)",
+                                 (row["id"],"Assess regulatory impact and determine required action.","RA","Open",
+                                  datetime.now(timezone.utc).isoformat()))
+                    conn.commit(); st.rerun()
+            with col2:
+                if st.button("Mark Not Relevant", key=f"nr_{row['id']}"):
+                    conn.execute("UPDATE documents SET status='Not Relevant' WHERE id=?", (row["id"],))
+                    conn.commit(); st.rerun()
+
+st.divider()
+with st.expander("System details"):
+    st.write("**Purpose:** discover → filter → interpret → RA review → action.")
+    st.write("**Important:** Relevance is a screening aid, not a regulatory conclusion. Final applicability/compliance decisions remain with qualified RA.")
+    st.write("**Official sources monitored:** CDSCO Gazette Notifications, Circulars, Public Notices.")
