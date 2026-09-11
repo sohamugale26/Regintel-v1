@@ -83,31 +83,31 @@ def seed_real_cdsco_data():
                 "IND-CDSCO-2026-SEP-05", "CDSCO", "Circular",
                 "Coordinated action against illegal manufacture and sale of spurious drugs.",
                 "2026-09-05", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTA5ODc=", "File No. ENF/Spurious/2026",
-                "GMP & Compliance",
+                "GMP, GLP & Manufacturing Compliance",
                 "State drug controllers directed to enforce strict supply chain mapping and conduct joint raids to curb spurious drug manufacturing.",
                 "N/A", "Routine state-level inspections.", "Mandated joint central-state coordinated raids and supply chain verification.",
                 "It has been decided to initiate a coordinated action against the illegal manufacture and sale of spurious drugs pan India...",
-                "Quality Assurance / Enforcement", "Critical", 95, "All Commercial Formulations", "Needs Review", ""
+                "Quality Assurance / Enforcement", "Critical", 95, "APIs & Intermediates, Oral Solids & Liquids, Sterile Injectables & Parenterals", "Needs Review", ""
             ),
             (
                 "IND-CDSCO-2026-AUG-11", "CDSCO", "Public Notice",
                 "Manufacturing and marketing of un-approved drug products containing Enclomiphene and its combinations.",
                 "2026-08-11", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTA5NTI=", "F.No. 12-01/26-DC",
-                "GMP & Compliance",
+                "GMP, GLP & Manufacturing Compliance",
                 "Strict prohibition directive banning the unapproved manufacture and distribution of Enclomiphene APIs and formulations.",
                 "N/A", "General adherence to New Drug approval rules.", "Specific immediate ban and product recall for Enclomiphene combinations.",
                 "The manufacturing and marketing of un-approved drug products containing Enclomiphene and its combinations is strictly prohibited...",
-                "Regulatory Affairs", "Critical", 92, "APIs, Oral Solids", "Needs Review", ""
+                "Regulatory Affairs", "Critical", 92, "APIs & Intermediates, Oral Solids & Liquids", "Needs Review", ""
             ),
             (
                 "IND-CDSCO-2026-SEP-10", "CDSCO", "Advisory",
                 "Clarification regarding regulatory pathway for fixed-dose combinations (FDCs) approved prior to 1988.",
                 "2026-09-10", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTEwMTI=", "F.No. FDC/1988/2026",
-                "Clinical Trials & Registration",
+                "Clinical Trials & New Drugs (NDCT 2019)",
                 "Clarification outlining the required Phase IV safety data submissions for legacy FDCs to maintain market authorization.",
                 "N/A", "Legacy FDCs operated under grandfathered approvals.", "Mandatory Phase IV trial safety data submission required for license renewal.",
                 "FDCs permitted for continued manufacturing prior to 1988 must submit comprehensive post-marketing safety data...",
-                "Clinical Operations / RA", "High", 85, "Legacy Oral Solids", "Informational", ""
+                "Clinical Operations / RA", "High", 85, "Oral Solids & Liquids", "Informational", ""
             )
         ]
         c.executemany("INSERT INTO updates VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", real_records)
@@ -118,7 +118,6 @@ def seed_real_cdsco_data():
 seed_real_cdsco_data()
 
 def synchronize_cdsco_portal():
-    # Placeholder for live scraper hitting specific CDSCO directories
     new_records = 0
     c = conn.cursor()
     if new_records > 0:
@@ -140,11 +139,31 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("##### India Compliance Engine")
-    st.info("System evaluates and sorts incoming CDSCO updates strictly against the internal S_26 baseline.", icon="🇮🇳")
+    st.info("System evaluates and sorts incoming CDSCO updates strictly against the internal **S_26** baseline.", icon="🇮🇳")
     
     st.markdown("##### S_26 Portfolio Parameters")
-    selected_products = st.multiselect("Active Manufacturing Lines", ["Injectables", "Oral Solids", "Biologics", "APIs"], default=["Injectables", "Oral Solids", "APIs"], on_change=lambda: st.session_state.update(view_active=False))
-    selected_topics = st.multiselect("Regulatory Domains", ["GMP & Compliance", "Clinical Trials & Registration", "Pharmacovigilance"], default=["GMP & Compliance", "Clinical Trials & Registration"], on_change=lambda: st.session_state.update(view_active=False))
+    
+    # Universal Manufacturing Lines
+    product_options = [
+        "APIs & Intermediates", 
+        "Oral Solids & Liquids", 
+        "Sterile Injectables & Parenterals", 
+        "Biologics, Biosimilars & Vaccines", 
+        "Medical Devices (Class A-D) & IVDs", 
+        "Cosmetics & Dermaceuticals", 
+        "AYUSH Formulations"
+    ]
+    selected_products = st.multiselect("Active Manufacturing Lines", product_options, default=["APIs & Intermediates", "Oral Solids & Liquids"], on_change=lambda: st.session_state.update(view_active=False))
+    
+    # Universal Regulatory Domains
+    domain_options = [
+        "GMP, GLP & Manufacturing Compliance", 
+        "Clinical Trials & New Drugs (NDCT 2019)", 
+        "Pharmacovigilance & Safety (PvPI)", 
+        "Import, Export & Registration (SUGAM)", 
+        "Quality Control & Pharmacopoeia (IPC)"
+    ]
+    selected_topics = st.multiselect("Regulatory Domains", domain_options, default=["GMP, GLP & Manufacturing Compliance"], on_change=lambda: st.session_state.update(view_active=False))
 
 # --- CORE DATA RETRIEVAL & S_26 DYNAMIC SCORING ---
 raw_df = pd.read_sql_query("SELECT * FROM updates", conn)
@@ -216,7 +235,7 @@ with tab_dash:
     # --- EXECUTION GATE (STANDBY MODE) ---
     if not st.session_state.view_active:
         st.markdown("<br><br>", unsafe_allow_html=True)
-        st.info("⏸️ **System in Standby Mode.** \n\nAdjust S_26 parameters in the sidebar and click **Sync Live CDSCO Portals** or enter a search query to pull and sort the latest official data.")
+        st.info("⏸️ **System in Standby Mode.** \n\nAdjust **S_26** parameters in the sidebar and click **Sync Live CDSCO Portals** or enter a search query to pull and sort the latest official data.")
     else:
         # Apply strict Search Filter if search is active, otherwise show ALL sorted by S_26
         if st.session_state.search_query:
@@ -237,7 +256,7 @@ with tab_dash:
 
         st.markdown("<br>### 📋 CDSCO Intelligence Feed (Sorted by Relevance)", unsafe_allow_html=True)
         if st.session_state.search_query:
-            st.caption(f"Showing historical archive results for: **'{st.session_state.search_query}'**")
+            st.caption(f"Showing historical archive results for: **'{st.session_state.search_query}'** (S_26 Baseline bypassed)")
 
         if display_df.empty:
             st.info("0 updates found. Clear search or adjust parameters.")
