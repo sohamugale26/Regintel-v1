@@ -284,11 +284,11 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("""
-    *Session Profile*  
-    👤 *Dr. A. Kulkarni*  
-    🏛️ *Nova Formulation Ltd.*  
-    🎯 *Lead Regulatory Affairs*  
-    Enterprise License (Audit Verified)
+    **Session Profile**  
+    👤 **Dr. A. Kulkarni**  
+    🏛️ **Nova Formulation Ltd.**  
+    🎯 **Lead Regulatory Affairs**  
+    *Enterprise License (Audit Verified)*
     """)
 
 # --- VIEW 1: DASHBOARD ---
@@ -384,22 +384,22 @@ elif nav_selection == "Regulatory Updates":
 
     df_filtered = pd.read_sql_query(query, conn, params=params)
 
-    st.markdown(f"*Found {len(df_filtered)} regulatory records matching criteria*")
+    st.markdown(f"**Found {len(df_filtered)} regulatory records matching criteria**")
 
     for _, row in df_filtered.iterrows():
         b_pri = "badge-critical" if row['priority'] == 'Critical' else ("badge-high" if row['priority'] == 'High' else "badge-medium")
         with st.expander(f"[{row['authority']}] {row['title']} — Published: {row['published_date']}"):
             col_left, col_right = st.columns([3, 1])
             with col_left:
-                st.markdown(f"*Document Type:* {row['doc_type']} | *Topic:* {row['topic']} | *Effective:* {row['effective_date']}")
-                st.markdown(f"*Executive Brief:* {row['summary']}")
-                st.markdown(f"*Potentially Affected Products:* {row['affected_products']}")
+                st.markdown(f"**Document Type:** {row['doc_type']} | **Topic:** {row['topic']} | **Effective:** {row['effective_date']}")
+                st.markdown(f"**Executive Brief:** {row['summary']}")
+                st.markdown(f"**Potentially Affected Products:** {row['affected_products']}")
                 st.markdown(f"[🔗 Open Official Source Document]({row['url']})")
             with col_right:
-                st.markdown(f"*Jurisdiction:* {row['country']}")
-                st.markdown(f"*Priority:* <span class='{b_pri}'>{row['priority']}</span>", unsafe_allow_html=True)
-                st.markdown(f"*Relevance Score:* {row['relevance_score']}/100")
-                st.markdown(f"*Review Status:* {row['status']}")
+                st.markdown(f"**Jurisdiction:** {row['country']}")
+                st.markdown(f"**Priority:** <span class='{b_pri}'>{row['priority']}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Relevance Score:** {row['relevance_score']}/100")
+                st.markdown(f"**Review Status:** `{row['status']}`")
                 if st.button("Inspect Full Intelligence Record", key=f"btn_{row['id']}"):
                     st.session_state.selected_record_id = row['id']
                     st.info(f"Navigate to 'Intelligence Detail' tab to inspect record {row['id']}.")
@@ -427,10 +427,10 @@ elif nav_selection == "Intelligence Detail":
     h1, h2 = st.columns([3, 1])
     with h1:
         st.markdown(f"### {item['title']}")
-        st.markdown(f"*Authority:* {item['authority']} ({item['country']}) | *Document Type:* {item['doc_type']} | *Published:* {item['published_date']} | *Effective:* {item['effective_date']}")
+        st.markdown(f"**Authority:** {item['authority']} ({item['country']}) | **Document Type:** {item['doc_type']} | **Published:** {item['published_date']} | **Effective:** {item['effective_date']}")
     with h2:
-        st.markdown(f"*Relevance Score:* *{item['relevance_score']}/100*")
-        st.markdown(f"*Priority:* {item['priority']} | *Status:* {item['status']}")
+        st.markdown(f"**Relevance Score:** **{item['relevance_score']}/100**")
+        st.markdown(f"**Priority:** `{item['priority']}` | **Status:** `{item['status']}`")
 
     # Section A: Executive Summary
     st.markdown("#### Section A: Executive Summary")
@@ -444,13 +444,13 @@ elif nav_selection == "Intelligence Detail":
     st.markdown("#### Section B: Comparative Requirement Analysis (OLD → NEW)")
     col_old, col_new = st.columns(2)
     with col_old:
-        st.markdown("*Previous Regulatory Requirement*")
+        st.markdown("**Previous Regulatory Requirement**")
         st.markdown(f"""<div class="diff-old">{item['previous_req']}</div>""", unsafe_allow_html=True)
     with col_new:
-        st.markdown("*New / Amended Regulatory Requirement*")
+        st.markdown("**New / Amended Regulatory Requirement**")
         st.markdown(f"""<div class="diff-new">{item['new_req']}</div>""", unsafe_allow_html=True)
 
-    st.markdown(f"*Core Substance of Change:* {item['what_changed']}")
+    st.markdown(f"**Core Substance of Change:** {item['what_changed']}")
 
     # Section C & D: Evidence vs Interpretation
     col_ev, col_why = st.columns(2)
@@ -572,22 +572,22 @@ elif nav_selection == "Tasks & Actions":
         st.markdown("##### Assigned / New")
         t_new = df_tasks[df_tasks['status'].isin(['Assigned', 'New'])]
         for _, t in t_new.iterrows():
-            st.info(f"*{t['task_id']}*: {t['title']}\n\n👤 {t['owner']} | 📅 {t['due_date']}")
+            st.info(f"**{t['task_id']}**: {t['title']}\n\n👤 {t['owner']} | 📅 {t['due_date']}")
     with col_w2:
         st.markdown("##### In Review")
         t_rev = df_tasks[df_tasks['status'] == 'In Review']
         for _, t in t_rev.iterrows():
-            st.warning(f"*{t['task_id']}*: {t['title']}\n\n👤 {t['owner']} | 📅 {t['due_date']}")
+            st.warning(f"**{t['task_id']}**: {t['title']}\n\n👤 {t['owner']} | 📅 {t['due_date']}")
     with col_w3:
         st.markdown("##### Action Required")
         t_act = df_tasks[df_tasks['status'] == 'Action Required']
         for _, t in t_act.iterrows():
-            st.error(f"*{t['task_id']}*: {t['title']}\n\n👤 {t['owner']} | 📅 {t['due_date']}")
+            st.error(f"**{t['task_id']}**: {t['title']}\n\n👤 {t['owner']} | 📅 {t['due_date']}")
     with col_w4:
         st.markdown("##### Completed")
         t_comp = df_tasks[df_tasks['status'] == 'Completed']
         for _, t in t_comp.iterrows():
-            st.success(f"*{t['task_id']}*: {t['title']}\n\n👤 {t['owner']} | Finished")
+            st.success(f"**{t['task_id']}**: {t['title']}\n\n👤 {t['owner']} | Finished")
 
     st.markdown("---")
     st.markdown("##### Update Task Status")
@@ -705,7 +705,7 @@ elif nav_selection == "Workspace & Baseline":
         
         st.markdown("##### Portfolio Formulations")
         for i, p in enumerate(st.session_state.products):
-            st.markdown(f"- *{p['name']}* ({p['form']}) — Market: {p['market']}")
+            st.markdown(f"- **{p['name']}** ({p['form']}) — Market: *{p['market']}*")
         
         with st.expander("Register New Formulation"):
             p_n = st.text_input("Product Identifier", placeholder="e.g. Cipro-Duo Suspension")
@@ -729,14 +729,14 @@ elif nav_selection == "Workspace & Baseline":
             if extracted_text:
                 st.session_state.active_baseline_text = extracted_text
                 st.session_state.active_baseline_filename = up_file.name
-                st.success(f"✅ Active Document: *{up_file.name}* parsed successfully ({len(extracted_text)} characters loaded).")
+                st.success(f"✅ Active Document: **{up_file.name}** parsed successfully ({len(extracted_text)} characters loaded).")
             else:
                 st.error("Failed to parse document contents. Using system baseline.")
         else:
             if "active_baseline_text" not in st.session_state:
                 st.session_state.active_baseline_text = load_system_baseline()
                 st.session_state.active_baseline_filename = "S_26 (System Default Baseline)"
-            st.info(f"Current Active Baseline: *{st.session_state.active_baseline_filename}*")
+            st.info(f"Current Active Baseline: **{st.session_state.active_baseline_filename}**")
 
         with st.expander("Inspect Active Baseline Content"):
             st.text_area("Baseline Directives", st.session_state.active_baseline_text, height=220)
