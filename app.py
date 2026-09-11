@@ -324,4 +324,34 @@ with tab_dash:
                     st.markdown(f"> *\"{item['official_excerpt']}\"*")
                     
                     st.markdown("---")
-                    st.markdown("<div class='section-title'>Governance Gate & RA Determination</div>", un
+                    st.markdown("<div class='section-title'>Governance Gate & RA Determination</div>", unsafe_allow_html=True)
+                    ra1, ra2, ra3 = st.columns([1.2, 2, 1.2])
+                    with ra1:
+                        opts = ["Needs Review", "Action Required", "Informational", "Not Relevant"]
+                        decided_status = st.selectbox("Compliance Status", opts, index=opts.index(item['status']) if item['status'] in opts else 0, key=f"sel_{item['id']}")
+                    with ra2:
+                        decided_notes = st.text_input("Technical Justification", value=item['ra_assessment'] or "", key=f"note_{item['id']}")
+                    with ra3:
+                        if st.button("Commit Decision", key=f"btn_commit_{item['id']}"):
+                            c = conn.cursor()
+                            c.execute("UPDATE updates SET status=?, ra_assessment=? WHERE id=?", (decided_status, decided_notes, item['id']))
+                            c.execute("INSERT INTO audit_logs (timestamp, user, action, record_id, details) VALUES (?, ?, ?, ?, ?)",
+                                      (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "RA Professional", "GOVERNANCE_REVIEW", item['id'], f"Status set to {decided_status}."))
+                            conn.commit()
+                            st.success("Audit log recorded.")
+                            st.rerun()
+
+# --- TAB 2: REGULATORY REGISTRY ---
+with tab_registry:
+    st.markdown("### 🗄️ Master CDSCO Registry")
+    st.caption("Immutable master ledger of all unfiltered regulatory notifications harvested from India's official portals.")
+    if raw_df.empty: 
+        st.info("0 regulatory updates found in the master database.")
+    else: 
+        st.dataframe(raw_df[["id", "authority", "official_ref", "title", "published_date", "doc_type"]], use_container_width=True, hide_index=True)
+
+# --- TAB 3: AUDIT TRAIL ---
+with tab_audit:
+    st.markdown("### 📋 Compliance Audit Trail")
+    df_logs = pd.read_sql_query("SELECT timestamp, user, action, record_id, details FROM audit_logs ORDER BY id DESC", conn)
+    st.dataframe(df_logs, use_container_width=True, hide_index=True)
