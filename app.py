@@ -507,7 +507,7 @@ elif nav_selection == "Intelligence Detail":
         st.success("Determination securely recorded to immutable audit log.")
         st.rerun()
 
-VIEW 4: IMPACT ASSESSMENT ---
+# --- VIEW 4: IMPACT ASSESSMENT ---
 elif nav_selection == "Impact Assessment":
     st.markdown("### Operational Impact Assessment Matrix")
     st.caption("Product-level impact evaluation across active regulatory portfolios")
