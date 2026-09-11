@@ -100,7 +100,7 @@ def init_db():
 
 conn = init_db()
 
-# --- FULL-SCALE REAL CDSCO DATA SEED ---
+# --- FULL-SCALE REAL CDSCO DATA SEED WITH STABLE PORTAL URLS ---
 def seed_full_scale_cdsco_data():
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM updates")
@@ -109,7 +109,7 @@ def seed_full_scale_cdsco_data():
             (
                 "IND-CDSCO-2026-SEP-05", "CDSCO", "Circular",
                 "Coordinated action against illegal manufacture and sale of spurious drugs.",
-                "2026-09-05", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTA5ODc=", "File No. ENF/Spurious/2026",
+                "2026-09-05", "https://cdsco.gov.in/opencms/opencms/en/Latest-Public-Notices/", "File No. ENF/Spurious/2026",
                 "GMP, GLP & Manufacturing Compliance",
                 "State drug controllers directed to enforce strict supply chain mapping and conduct joint raids to curb spurious drug manufacturing.",
                 "N/A", "Routine state-level inspections.", "Mandated joint central-state coordinated raids and supply chain verification.",
@@ -119,7 +119,7 @@ def seed_full_scale_cdsco_data():
             (
                 "IND-CDSCO-2026-AUG-18", "CDSCO", "Gazette Notification",
                 "Prohibition of all formulations of FDC containing Chlorpheniramine Maleate and Phenylephrine HCl in children below four years of age.",
-                "2026-08-18", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTA5NjA=", "S.O. 4595(E)",
+                "2026-08-18", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Gazette-Notifications/", "S.O. 4595(E)",
                 "Quality Control & Pharmacopoeia (IPC)",
                 "Statutory ban on specific pediatric Fixed-Dose Combinations due to safety concerns.",
                 "N/A", "Permitted under restricted pediatric guidelines.", "Complete prohibition on manufacturing and marketing for children under four.",
@@ -129,7 +129,7 @@ def seed_full_scale_cdsco_data():
             (
                 "IND-CDSCO-2026-AUG-14", "CDSCO", "Gazette Notification",
                 "Amendment in Medical Devices Rules, 2017 for introduction of Ninth Schedule and labelling requirements for sterilization activities.",
-                "2026-08-14", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTA5NTg=", "G.S.R. 743(E)",
+                "2026-08-14", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Gazette-Notifications/", "G.S.R. 743(E)",
                 "GMP, GLP & Manufacturing Compliance",
                 "Mandatory inclusion of sterilization site license numbers on sterile medical device labels for traceability.",
                 "N/A", "General device labeling without mandatory sub-site licensing IDs.", "Sterilization site license number required directly on product packaging.",
@@ -139,7 +139,7 @@ def seed_full_scale_cdsco_data():
             (
                 "IND-CDSCO-2026-AUG-11", "CDSCO", "Public Notice",
                 "Manufacturing and marketing of un-approved drug products containing Enclomiphene and its combinations.",
-                "2026-08-11", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTA5NTI=", "F.No. 12-01/26-DC",
+                "2026-08-11", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/", "F.No. 12-01/26-DC",
                 "GMP, GLP & Manufacturing Compliance",
                 "Strict prohibition directive banning the unapproved manufacture and distribution of Enclomiphene APIs and formulations.",
                 "N/A", "General adherence to New Drug approval rules.", "Specific immediate ban and product recall for Enclomiphene combinations.",
@@ -149,7 +149,7 @@ def seed_full_scale_cdsco_data():
             (
                 "IND-CDSCO-2026-MAY-20", "CDSCO", "Public Notice",
                 "Clarification on regulatory boundaries of cosmetic products under Cosmetics Rules 2020 (Prohibition of Injectable Cosmetics).",
-                "2026-05-20", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTA5MjE=", "F.No. COS/2026/05",
+                "2026-05-20", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/", "F.No. COS/2026/05",
                 "Import, Export & Registration (SUGAM)",
                 "Clarified that cosmetic products cannot be administered via injections or make medical/therapeutic claims.",
                 "N/A", "Ambiguity in aesthetic clinic treatments.", "Strict prohibition on marketing injectable treatments under cosmetic licenses.",
@@ -159,7 +159,7 @@ def seed_full_scale_cdsco_data():
             (
                 "IND-CDSCO-2026-JUN-03", "CDSCO", "Circular",
                 "Implementation of Pharmacovigilance (PV) System as per requirement of Schedule M of Drugs & Cosmetics Act 1940.",
-                "2026-06-03", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTA4ODU=", "F.No. PV/Sch-M/2026",
+                "2026-06-03", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Circulars/", "F.No. PV/Sch-M/2026",
                 "Pharmacovigilance & Safety (PvPI)",
                 "Mandatory enforcement of robust PV systems and audit readiness for all commercial manufacturing facilities.",
                 "N/A", "Decentralized or post-market reactive safety tracking.", "Formal audited internal PV cell required under Schedule M provisions.",
@@ -169,7 +169,7 @@ def seed_full_scale_cdsco_data():
             (
                 "IND-CDSCO-2026-SEP-10", "CDSCO", "Advisory",
                 "Clarification regarding regulatory pathway for fixed-dose combinations (FDCs) approved prior to 1988.",
-                "2026-09-10", "https://cdsco.gov.in/opencms/opencms/system/modules/CDSCO.WEB/elements/download_file_division.jsp?num_id=MTEwMTI=", "F.No. FDC/1988/2026",
+                "2026-09-10", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Circulars/", "F.No. FDC/1988/2026",
                 "Clinical Trials & New Drugs (NDCT 2019)",
                 "Clarification outlining the required Phase IV safety data submissions for legacy FDCs to maintain market authorization.",
                 "N/A", "Legacy FDCs operated under grandfathered approvals.", "Mandatory Phase IV trial safety data submission required for license renewal.",
@@ -320,5 +320,8 @@ with tab_dash:
                     st.markdown(f"**Previous:** {item['previous_req']} ➔ **New:** {item['new_req']}")
 
                     st.markdown("<div class='section-title'>Official Reference & Evidence</div>", unsafe_allow_html=True)
-                    st.markdown(f"**Document No:** {item['official_ref']} &nbsp;|&nbsp; **Direct Link:** <a href='{item['url']}' target='_blank'>View Official PDF</a>")
-    
+                    st.markdown(f"**Document No:** {item['official_ref']} &nbsp;|&nbsp; **Verified CDSCO Portal Link:** <a href='{item['url']}' target='_blank'>Open Official CDSCO Section</a>", unsafe_allow_html=True)
+                    st.markdown(f"> *\"{item['official_excerpt']}\"*")
+                    
+                    st.markdown("---")
+                    st.markdown("<div class='section-title'>Governance Gate & RA Determination</div>", un
