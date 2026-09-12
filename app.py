@@ -14,6 +14,10 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="RegIntel | Master Architecture", layout="wide", page_icon="🛡️")
 
+# Initialize Session State for Execution Lock
+if 'executed' not in st.session_state:
+    st.session_state.executed = False
+
 # Custom CSS for Banner, Action-Blink, and Always-On Live Dot
 st.markdown("""
 <style>
@@ -111,7 +115,7 @@ def format_banner_date(date_str):
     try:
         clean_date = date_str.replace('/', '-').strip()
         parsed = None
-        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%b %d, %Y"):
+        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%b %d, %Y", "%B %d, %Y"):
             try:
                 parsed = datetime.strptime(clean_date, fmt)
                 break
@@ -130,14 +134,14 @@ def parse_db_date(date_str):
         return datetime(2026, 9, 1)
     try:
         clean_date = date_str.replace('/', '-').strip()
-        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%b %d, %Y"):
+        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%b %d, %Y", "%B %d, %Y"):
             try:
                 return datetime.strptime(clean_date, fmt)
             except ValueError:
                 pass
     except Exception:
         pass
-    return datetime.now()
+    return datetime(2000, 1, 1) # Fallback for old/unparseable to ensure they are filtered out
 
 def get_latest_cdsco_alert():
     c = conn.cursor()
@@ -192,7 +196,6 @@ def analyze_regulatory_update(title, authority, profile_context, selected_topics
         lower_title = title.lower()
         detected_topic = "General Regulatory"
         
-        # Keyword Matching for S_26 Baseline
         if any(k in lower_title for k in ["trial", "ethics", "clinical"]):
             detected_topic = "Clinical Trials"
         elif any(k in lower_title for k in ["manufacturing", "gmp", "quality"]):
@@ -202,7 +205,6 @@ def analyze_regulatory_update(title, authority, profile_context, selected_topics
         elif any(k in lower_title for k in ["pharmacovigilance", "adverse", "safety"]):
             detected_topic = "Pharmacovigilance"
 
-        # Dynamic Scoring against user sidebar selections
         is_match = detected_topic in selected_topics if selected_topics else True
         score = 95 if is_match else 20
         impact = "High" if is_match else "Low"
@@ -214,7 +216,6 @@ def analyze_regulatory_update(title, authority, profile_context, selected_topics
             "relevance": score
         }
 
-    # Paid AI Mode
     client = OpenAI(api_key=api_key)
     prompt = f"Analyze {authority} update: '{title}'. Context: {profile_context}. Output JSON keys: 'topic', 'summary', 'impact', 'relevance'."
     try:
@@ -237,7 +238,7 @@ def scrape_cdsco(profile_context, selected_topics):
         res = requests.get(url, headers=headers, verify=False, timeout=15)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        for row in soup.find_all('tr')[1:8]: 
+        for row in soup.find_all('tr')[1:15]: 
             cols = row.find_all('td')
             if len(cols) >= 3:
                 title = cols[1].text.strip()
@@ -257,8 +258,8 @@ def scrape_cdsco(profile_context, selected_topics):
         st.error(f"Scraper Error: {e}")
     return len(new_updates)
 
-# --- 6. LIVE CDSCO SEARCH ENGINE ---
-def search_cdsco_live(search_term):
+# --- 6. LIVE CDSCO SEARCH ENGINE (With Year Filter) ---
+def search_cdsco_live(search_term, year_filter):
     targets = [
         ("Public Notices", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/"),
         ("Circulars", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Circulars/")
@@ -276,10 +277,16 @@ def search_cdsco_live(search_term):
                         cols = row.find_all('td')
                         if len(cols) >= 3:
                             title = cols[1].text.strip()
+                            date_str = cols[2].text.strip()
+                            
+                            # Apply Year Filter
+                            if year_filter != "All" and year_filter not in date_str:
+                                continue
+                                
                             if search_term.lower() in title.lower():
                                 link = cols[1].find('a') or row.find('a')
                                 doc_url = urllib.parse.urljoin("https://cdsco.gov.in", link['href']) if link and link.has_attr('href') else endpoint
-                                results.append({"Category": category, "Title": title, "Published Date": cols[2].text.strip(), "Document Link": doc_url})
+                                results.append({"Category": category, "Title": title, "Published Date": date_str, "Document Link": doc_url})
         except Exception:
             continue
     return results
@@ -302,6 +309,7 @@ with button_col:
 
 live_action_slot = status_col.empty()
 if execute_run:
+    st.session_state.executed = True
     live_action_slot.markdown('<div class="action-blink">🔴 SCRAPING LIVE... Connecting to CDSCO...</div>', unsafe_allow_html=True)
     count = scrape_cdsco(profile_context, topics)
     live_action_slot.empty()
@@ -311,19 +319,22 @@ st.divider()
 
 # --- 8. COLLAPSIBLE CDSCO SEARCH SECTION ---
 with st.expander("🔍 Search CDSCO Official Repository (Click to Minimize)", expanded=True):
-    st.caption("Perform real-time document discovery. Collapse this section when finished to view the dashboard below.")
+    st.caption("Perform historical document discovery. Filter by year to avoid retrieving outdated documents.")
     
-    search_col1, search_col2 = st.columns([3.5, 1])
+    search_col1, search_col2, search_col3 = st.columns([3, 1, 1])
     with search_col1:
         search_query = st.text_input("Enter regulatory keyword", placeholder="e.g. Clinical Trials, Vaccine")
     with search_col2:
+        search_year = st.selectbox("Select Year", ["All", "2026", "2025", "2024", "2023", "2022", "2021"])
+    with search_col3:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
         search_clicked = st.button("Search CDSCO")
 
     if search_clicked and search_query:
-        with st.spinner("Scraping live CDSCO registers..."):
-            matched_docs = search_cdsco_live(search_query)
+        with st.spinner(f"Scraping live CDSCO registers for {search_year}..."):
+            matched_docs = search_cdsco_live(search_query, search_year)
             if matched_docs:
-                st.success(f"Found {len(matched_docs)} documents for '{search_query}'.")
+                st.success(f"Found {len(matched_docs)} documents for '{search_query}' in {search_year}.")
                 for doc in matched_docs:
                     c_badge, c_body, c_btn = st.columns([1, 4, 1])
                     c_badge.info(doc["Category"])
@@ -331,64 +342,76 @@ with st.expander("🔍 Search CDSCO Official Repository (Click to Minimize)", ex
                     c_btn.link_button("View Doc", doc["Document Link"])
                     st.divider()
             else:
-                st.warning("No official documents found.")
+                st.warning(f"No official documents found for '{search_query}' in {search_year}.")
 
 st.divider()
 
 # --- 9. DYNAMIC FILTERING & TIME INTELLIGENCE ---
-st.subheader("📋 Regulatory Intelligence Records")
-
-if not markets and not products and not topics:
-    st.info("Please select your target Markets, Products, or Topics from the sidebar to view relevant intelligence.")
+if not st.session_state.executed:
+    st.info("🕒 Awaiting Execution. Press 'Execute Source Monitor' to scan for today's updates.")
 else:
-    df = pd.read_sql_query("SELECT * FROM updates ORDER BY id DESC", conn)
-    
-    if not df.empty:
-        # Filter by Topic (Dynamic Score eliminates non-matches automatically)
-        if topics:
-            df = df[df['topic'].isin(topics) | (df['relevance_score'] >= 80)]
-            
-        # Parse Dates for Time Filter
-        df['parsed_date'] = df['date'].apply(parse_db_date)
-        df['days_old'] = (datetime.now() - df['parsed_date']).dt.days
-        
-        # Apply 7-Day Filter
-        display_df = df[df['days_old'] <= 7]
-        
-        # The Safety Net: If empty, show 30-day toggle
-        if display_df.empty:
-            st.warning("No new updates published by CDSCO in the last 7 days matching your criteria.")
-            if st.toggle("View Last 30 Days"):
-                display_df = df[df['days_old'] <= 30]
-
-        # Top Metrics
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Visible Updates", len(display_df))
-        col2.metric("High Relevance", len(display_df[display_df['relevance_score'] >= 80]) if not display_df.empty else 0)
-        col3.metric("Pending Reviews", len(display_df[display_df['status'] == 'Pending Review']) if not display_df.empty else 0)
-        col4.metric("Sources", "CDSCO Live")
-
-        # Render Feed
-        for _, row in display_df.iterrows():
-            rel_color = "🔴" if row['relevance_score'] >= 80 else ("🟡" if row['relevance_score'] >= 50 else "🟢")
-            with st.expander(f"{rel_color} [{row['authority']}] {row['title']} — {row['date']}"):
-                meta_col, ai_col, action_col = st.columns([1.5, 2, 1])
-                with meta_col:
-                    st.write(f"Topic: {row['topic']}")
-                    st.markdown(f"[View Official Evidence]({row['url']})")
-                with ai_col:
-                    st.write(f"Relevance: {row['relevance_score']}/100 | Impact: {row['impact']}")
-                    st.write(f"Summary: {row['summary']}")
-                with action_col:
-                    options = ["Pending Review", "Action Required", "Informational", "Not Relevant"]
-                    current_idx = options.index(row['status']) if row['status'] in options else 0
-                    new_status = st.selectbox("Decision", options, index=current_idx, key=row['id'])
-                    if new_status != row['status']:
-                        c = conn.cursor()
-                        c.execute("UPDATE updates SET status=? WHERE id=?", (new_status, row['id']))
-                        c.execute("INSERT INTO audit_logs (update_id, action, user, timestamp) VALUES (?, ?, ?, ?)", 
-                                  (row['id'], new_status, "RA Professional", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                        conn.commit()
-                        st.rerun()
+    if not markets and not products and not topics:
+        st.warning("Please select your target Markets, Products, or Topics from the sidebar to view relevant intelligence.")
     else:
-        st.info("Run the Source Monitor to populate data.")
+        # Corner Timeframe Control
+        head_col1, head_col2 = st.columns([4, 1])
+        with head_col1:
+            st.subheader("📋 Regulatory Intelligence Records")
+        with head_col2:
+            time_filter = st.selectbox("Timeline", ["Past 24 Hours", "Past 7 Days", "Past 30 Days"], index=1, label_visibility="collapsed")
+        
+        # Determine day range for the shield
+        if time_filter == "Past 24 Hours":
+            days_allowed = 1
+        elif time_filter == "Past 7 Days":
+            days_allowed = 7
+        else:
+            days_allowed = 30
+
+        df = pd.read_sql_query("SELECT * FROM updates ORDER BY id DESC", conn)
+        
+        if not df.empty:
+            # Filter by Sidebar Topics
+            if topics:
+                df = df[df['topic'].isin(topics) | (df['relevance_score'] >= 80)]
+                
+            # Apply Strict Date Shield to block old pinned records
+            df['parsed_date'] = df['date'].apply(parse_db_date)
+            df['days_old'] = (datetime.now() - df['parsed_date']).dt.days
+            
+            display_df = df[df['days_old'] <= days_allowed]
+            
+            # Top Metrics
+            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+            m_col1.metric(f"Updates ({time_filter})", len(display_df))
+            m_col2.metric("High Relevance", len(display_df[display_df['relevance_score'] >= 80]) if not display_df.empty else 0)
+            m_col3.metric("Pending Reviews", len(display_df[display_df['status'] == 'Pending Review']) if not display_df.empty else 0)
+            m_col4.metric("Sources", "CDSCO Live")
+
+            if display_df.empty:
+                st.warning(f"No active regulatory updates match your profile within the {time_filter}. Older pinned documents have been successfully filtered out.")
+            else:
+                # Render Clean Feed
+                for _, row in display_df.iterrows():
+                    rel_color = "🔴" if row['relevance_score'] >= 80 else ("🟡" if row['relevance_score'] >= 50 else "🟢")
+                    with st.expander(f"{rel_color} [{row['authority']}] {row['title']} — {row['date']}"):
+                        meta_col, ai_col, action_col = st.columns([1.5, 2, 1])
+                        with meta_col:
+                            st.write(f"Topic: {row['topic']}")
+                            st.markdown(f"[View Official Evidence]({row['url']})")
+                        with ai_col:
+                            st.write(f"Relevance: {row['relevance_score']}/100 | Impact: {row['impact']}")
+                            st.write(f"Summary: {row['summary']}")
+                        with action_col:
+                            options = ["Pending Review", "Action Required", "Informational", "Not Relevant"]
+                            current_idx = options.index(row['status']) if row['status'] in options else 0
+                            new_status = st.selectbox("Decision", options, index=current_idx, key=row['id'])
+                            if new_status != row['status']:
+                                c = conn.cursor()
+                                c.execute("UPDATE updates SET status=? WHERE id=?", (new_status, row['id']))
+                                c.execute("INSERT INTO audit_logs (update_id, action, user, timestamp) VALUES (?, ?, ?, ?)", 
+                                          (row['id'], new_status, "RA Professional", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                                conn.commit()
+                                st.rerun()
+        else:
+            st.info("The local intelligence database is empty.")
