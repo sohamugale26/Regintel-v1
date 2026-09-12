@@ -1,4 +1,3 @@
-
 import streamlit as st
 import sqlite3
 import requests
@@ -21,6 +20,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Initialize Session State
+if "analysis_started" not in st.session_state:
+    st.session_state.analysis_started = False
+if "latest_updates" not in st.session_state:
+    st.session_state.latest_updates = []
+if "sync_result" not in st.session_state:
+    st.session_state.sync_result = None
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -31,9 +38,9 @@ CDSCO_SOURCES = {
     "Gazette Notifications": "https://www.cdsco.gov.in/opencms/opencms/en/Notifications/Gazette-Notifications/",
     "Circulars": "https://www.cdsco.gov.in/opencms/opencms/en/Notifications/Circulars/",
     "Public Notices": "https://www.cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/",
+    "New Drugs / NDCTR": "https://www.cdsco.gov.in/opencms/opencms/en/Drugs/New-Drugs/"
 }
 
-# Primary field -> secondary field -> searchable regulatory/product concepts.
 PRODUCT_HIERARCHY = {
     "Tablets": {
         "Antibiotics": ["antibiotic", "antimicrobial", "antibacterial"],
@@ -217,8 +224,6 @@ def normalize_date(value):
     return ""
 
 def parse_source_page(source, url):
-    """Best-effort parser for public CDSCO listing pages.
-    The official CDSCO page remains the authoritative source."""
     r = requests.get(
         url,
         headers={"User-Agent": "Mozilla/5.0 RegIntel/1.0"},
@@ -242,7 +247,6 @@ def parse_source_page(source, url):
         absolute = requests.compat.urljoin(url, href)
         low = (title + " " + absolute).lower()
 
-        # Keep likely regulatory documents/listing entries.
         signals = [
             ".pdf", "notification", "circular", "public notice", "gazette",
             "notice", "amendment", "schedule", "drug", "clinical", "gmp",
@@ -263,7 +267,6 @@ def parse_source_page(source, url):
             re.I
         )
         date = normalize_date(date_match.group(0)) if date_match else ""
-
         doc_type = "PDF" if ".pdf" in absolute.lower() else "Web notice"
 
         records.append({
@@ -299,7 +302,6 @@ def extract_pdf(url):
 
 def classify(title, text, source):
     s = clean(title + " " + text).lower()
-
     if any(x in s for x in CRITICAL_WORDS):
         priority = "Critical"
     elif any(x in s for x in HIGH_WORDS):
@@ -313,7 +315,6 @@ def classify(title, text, source):
         d for d, kws in REGULATORY_DOMAINS.items()
         if any(k in s for k in kws)
     ]
-
     return priority, matched_domains
 
 def calculate_relevance(title, text, selected_products, selected_domains):
@@ -325,8 +326,6 @@ def calculate_relevance(title, text, selected_products, selected_domains):
     for primary, secondary in selected_products:
         primary_terms = []
         secondary_terms = PRODUCT_HIERARCHY.get(primary, {}).get(secondary, [])
-
-        # Broad primary concepts.
         primary_map = {
             "Tablets": ["tablet", "tablets", "solid oral"],
             "Capsules": ["capsule", "capsules"],
@@ -410,11 +409,27 @@ def save_profile(company_name, selected_products, notes_map):
     )
     conn.commit()
 
-def current_profile():
-    company, rows = get_profile()
-    company_name = company["company_name"] if company else ""
-    products = [(r["primary_field"], r["secondary_field"]) for r in rows]
-    return company_name, products
+def fetch_latest_official_updates():
+    all_records = []
+    for source, url in CDSCO_SOURCES.items():
+        try:
+            all_records.extend(parse_source_page(source, url))
+        except Exception:
+            pass
+            
+    dated = [r for r in all_records if r.get("published_date")]
+    dated.sort(key=lambda x: datetime.fromisoformat(x["published_date"]).date(), reverse=True)
+    
+    seen = set()
+    latest_10 = []
+    for r in dated:
+        if r["url"] not in seen:
+            seen.add(r["url"])
+            latest_10.append(r)
+            if len(latest_10) == 10:
+                break
+                
+    return latest_10
 
 def sync_cdsco(selected_products, selected_domains, cutoff):
     all_records = []
@@ -431,7 +446,6 @@ def sync_cdsco(selected_products, selected_domains, cutoff):
     relevant_count = 0
 
     for item in all_records:
-        # The system deliberately refuses to use undated listing entries for the recent feed.
         if not item["published_date"] or not in_window(item["published_date"], cutoff):
             continue
 
@@ -488,8 +502,8 @@ def sync_cdsco(selected_products, selected_domains, cutoff):
          f"Recent dated CDSCO records checked: {checked}; relevant to profile: {relevant_count}; new: {new_count}.")
     )
     conn.commit()
-
     return checked, relevant_count, new_count, errors
+
 
 # ============================================================
 # SIDEBAR — PROFILE SETUP
@@ -503,7 +517,6 @@ with st.sidebar:
 
     st.divider()
     st.subheader("1. Company")
-
     default_company = company_saved["company_name"] if company_saved else ""
     company_name = st.text_input(
         "Company name",
@@ -513,10 +526,8 @@ with st.sidebar:
 
     st.divider()
     st.subheader("2. What does your company manufacture?")
-
     primary_options = list(PRODUCT_HIERARCHY.keys())
     saved_primary = sorted(set(r["primary_field"] for r in saved_product_rows))
-
     selected_primary = st.multiselect(
         "Primary manufacturing field",
         primary_options,
@@ -548,11 +559,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("3. Regulatory areas")
-
-    saved_domains = st.session_state.get(
-        "domains",
-        ["GMP / Manufacturing"]
-    )
+    saved_domains = st.session_state.get("domains", ["GMP / Manufacturing"])
     selected_domains = st.multiselect(
         "What should RA monitor?",
         list(REGULATORY_DOMAINS.keys()),
@@ -562,68 +569,67 @@ with st.sidebar:
 
     st.divider()
     st.subheader("4. Time window")
-
     window = st.radio(
         "Show official updates from",
         ["Past 30 days", "This year"],
         index=0
     )
-
     cutoff = get_window_cutoff(window)
 
     st.divider()
 
-    if st.button("💾 Save Company Profile", use_container_width=True):
+    if st.button("🔎 START ANALYSIS", type="primary", use_container_width=True):
         if not company_name.strip():
             st.error("Enter the company name first.")
         elif not selected_products:
             st.error("Select at least one specific product/manufacturing specialization.")
         else:
-            save_profile(company_name, selected_products, {})
-            st.success("Company profile saved.")
+            with st.spinner("Analyzing regulatory landscape..."):
+                save_profile(company_name, selected_products, {})
+                st.session_state.latest_updates = fetch_latest_official_updates()
+                checked, relevant, new, errors = sync_cdsco(
+                    selected_products, selected_domains, cutoff
+                )
+                st.session_state.sync_result = (checked, relevant, new, errors)
+                st.session_state.analysis_started = True
             st.rerun()
-
-    if st.button("🔄 Sync CDSCO Now", use_container_width=True):
-        with st.spinner("Checking official CDSCO sources..."):
-            checked, relevant, new, errors = sync_cdsco(
-                selected_products, selected_domains, cutoff
-            )
-        st.session_state["sync_result"] = (checked, relevant, new, errors)
-        st.rerun()
 
 # ============================================================
 # MAIN DASHBOARD
 # ============================================================
 
-st.title("Regulatory Intelligence Dashboard")
+st.title("CDSCO Regulatory Intelligence")
 
-if not company_name.strip():
-    st.warning("Start by entering your company name and manufacturing profile in the left panel.")
+if not st.session_state.analysis_started:
+    st.info("Configure your company profile on the left, then click **🔎 START ANALYSIS** to begin.")
+    st.stop()
 
-profile_text = ", ".join(
-    [f"{p} → {s}" for p, s in selected_products]
-) if selected_products else "No product profile selected"
+st.subheader(f"Company: {company_name}")
+profile_text = ", ".join([f"{p} → {s}" for p, s in selected_products]) if selected_products else "None"
+st.caption(f"Profile: {profile_text} | Monitoring: {window}")
+st.divider()
 
-st.caption(
-    f"**{company_name or 'Company not configured'}**  |  CDSCO / India  |  "
-    f"{window}  |  Profile: {profile_text}"
-)
+# ------------------------------------------------------------
+# LAYER 1: REGULATORY AWARENESS
+# ------------------------------------------------------------
+st.markdown("### 1. LATEST 10 OFFICIAL CDSCO UPDATES")
+st.caption("General Regulatory Awareness (Independent of Company Profile)")
 
-st.markdown(
-    "### What matters to my company — not everything the regulator publishes."
-)
+if st.session_state.latest_updates:
+    for i, update in enumerate(st.session_state.latest_updates, 1):
+        st.markdown(f"**{i}. {update['title']}**")
+        st.caption(f"{update['source']} | {update['published_date']}")
+        st.link_button("Official Source ↗", update['url'], key=f"latest_{i}")
+        st.write("---")
+else:
+    st.info("No updates found in the official sources.")
 
-if st.session_state.get("sync_result"):
-    checked, relevant, new, errors = st.session_state["sync_result"]
-    st.success(
-        f"Sync complete: {checked} recent official records checked • "
-        f"{relevant} profile matches • {new} new records"
-    )
-    if errors:
-        for e in errors:
-            st.warning(e)
+# ------------------------------------------------------------
+# LAYER 2: COMPANY-SPECIFIC INTELLIGENCE
+# ------------------------------------------------------------
+st.markdown("### 2. COMPANY-SPECIFIC REGULATORY INTELLIGENCE")
+st.caption("Filtered and scored for direct and strategic relevance to your company")
 
-# Load records and RE-CALCULATE against current unsaved profile.
 df = pd.read_sql_query(
     "SELECT * FROM documents ORDER BY published_date DESC, last_checked DESC",
     conn
@@ -638,208 +644,81 @@ if not df.empty:
         calculations = df.apply(
             lambda r: calculate_relevance(
                 r["title"], r["raw_text"], selected_products, selected_domains
-            ),
-            axis=1
+            ), axis=1
         )
         df["current_relevance"] = [x[0] for x in calculations]
         df["current_matches"] = [", ".join(x[1]) for x in calculations]
         df["current_domains"] = [", ".join(x[2]) for x in calculations]
         df["current_reasons"] = [" • ".join(x[3]) for x in calculations]
         df["current_priority"] = [
-            classify(r["title"], r["raw_text"], r["source"])[0]
-            for _, r in df.iterrows()
+            classify(r["title"], r["raw_text"], r["source"])[0] for _, r in df.iterrows()
         ]
         feed = df[df["current_relevance"] >= 40].copy()
     else:
-        feed = df.copy()
+        feed = pd.DataFrame()
 else:
     feed = pd.DataFrame()
 
-# KPIs
-total_recent = len(df)
-relevant_count = len(feed)
-
-critical_high = (
-    int(feed["current_priority"].isin(["Critical", "High"]).sum())
-    if not feed.empty else 0
-)
-
-needs_review = (
-    int(feed["status"].eq("Needs RA Review").sum())
-    if not feed.empty else 0
-)
-
-open_actions = conn.execute(
-    "SELECT COUNT(*) FROM actions WHERE status='Open'"
-).fetchone()[0]
-
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Official updates", total_recent)
-k2.metric("Relevant to my company", relevant_count)
-k3.metric("Critical / High", critical_high)
-k4.metric("Needs RA review", needs_review)
-k5.metric("Open actions", open_actions)
-
-st.divider()
-
-# ============================================================
-# RELEVANT INTELLIGENCE
-# ============================================================
-
-st.subheader("Relevant Regulatory Updates")
-
-if not selected_products:
-    st.info("Select your primary and specific manufacturing/product fields to generate company-specific intelligence.")
-elif feed.empty:
-    st.info(
-        f"No official, dated CDSCO updates in the **{window.lower()}** "
-        "period currently match this company profile."
-    )
+if feed.empty:
+    st.info("No specific updates matched your exact company profile in this time window.")
 else:
-    feed = feed.sort_values(
-        by=["current_priority", "published_dt"],
-        ascending=[True, False]
-    )
-
+    feed = feed.sort_values(by=["current_priority", "published_dt"], ascending=[True, False])
     priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
     feed["_sort"] = feed["current_priority"].map(priority_order).fillna(9)
     feed = feed.sort_values(["_sort", "published_dt"], ascending=[True, False])
 
     for _, row in feed.iterrows():
         priority = row["current_priority"]
-        badge = {
-            "Critical": "🔴 CRITICAL",
-            "High": "🟠 HIGH",
-            "Medium": "🟡 MEDIUM",
-            "Low": "⚪ LOW"
-        }.get(priority, priority)
+        badge = {"Critical": "🔴 CRITICAL", "High": "🟠 HIGH", "Medium": "🟡 MEDIUM", "Low": "⚪ LOW"}.get(priority, priority)
 
         with st.container(border=True):
-            c1, c2 = st.columns([5, 1])
-            with c1:
-                st.markdown(f"**{row['title']}**")
-                st.caption(
-                    f"{row['source']} • {row['published_date']} • {badge}"
-                )
-            with c2:
-                st.metric("Match", f"{int(row['current_relevance'])}%")
-
-            if row["current_matches"]:
-                st.write(f"**Product match:** {row['current_matches']}")
-            if row["current_domains"]:
-                st.write(f"**Regulatory area:** {row['current_domains']}")
-            if row["current_reasons"]:
-                st.write(f"**Why RegIntel selected it:** {row['current_reasons']}")
-
+            st.markdown(f"**[{badge}] {row['title']}**")
+            st.caption(f"{row['source']} • {row['published_date']}")
+            
+            domain_text = row['current_domains'] or "general regulatory requirements"
+            product_text = row['current_matches'] or "indirect operations"
+            
+            st.markdown("**Why this matters:**")
+            st.write(f"This update relates to **{domain_text}** and may impact your company's **{product_text}**. ({row['current_reasons']})")
+            
             if row["raw_text"]:
-                excerpt = clean(row["raw_text"])[:700]
-                st.write(f"**Evidence:** {excerpt}…")
-
-            st.markdown(f"**Current status:** `{row['status']}`")
-
-            a1, a2, a3 = st.columns([1, 1, 3])
-
+                excerpt = clean(row["raw_text"])[:400]
+                st.markdown("**Official evidence:**")
+                st.info(f"\"...{excerpt}...\"")
+            
+            a1, a2 = st.columns([1, 5])
             with a1:
                 if st.button("Needs Action", key=f"action_{row['id']}"):
-                    conn.execute(
-                        "UPDATE documents SET status='Action Required' WHERE id=?",
-                        (row["id"],)
-                    )
-                    conn.execute(
-                        "INSERT INTO actions(document_id,action,created_at) VALUES(?,?,?)",
-                        (row["id"], "RA to assess applicability and required response", now_iso())
-                    )
-                    conn.execute(
-                        "INSERT INTO audit(timestamp,event,details) VALUES(?,?,?)",
-                        (now_iso(), "ACTION_CREATED", row["title"])
-                    )
+                    conn.execute("UPDATE documents SET status='Action Required' WHERE id=?", (row["id"],))
+                    conn.execute("INSERT INTO actions(document_id,action,created_at) VALUES(?,?,?)", 
+                                 (row["id"], "RA to assess applicability", now_iso()))
                     conn.commit()
                     st.rerun()
-
             with a2:
-                if st.button("Not Relevant", key=f"not_{row['id']}"):
-                    conn.execute(
-                        "UPDATE documents SET status='Not Relevant' WHERE id=?",
-                        (row["id"],)
-                    )
-                    conn.execute(
-                        "INSERT INTO audit(timestamp,event,details) VALUES(?,?,?)",
-                        (now_iso(), "RA_NOT_RELEVANT", row["title"])
-                    )
-                    conn.commit()
-                    st.rerun()
-
-            with a3:
-                st.link_button("Open official CDSCO source ↗", row["url"])
-
-# ============================================================
-# ACTIONS
-# ============================================================
+                st.link_button("View CDSCO document ↗", row["url"])
 
 st.divider()
-st.subheader("Open RA Actions")
+
+# ------------------------------------------------------------
+# LAYER 3: RA REVIEW / ACTIONS
+# ------------------------------------------------------------
+st.markdown("### 3. RA REVIEW / ACTIONS")
 
 actions = pd.read_sql_query("""
-    SELECT a.id, a.status, a.action, a.owner, a.due_date,
-           d.title, d.source, d.published_date, d.url
-    FROM actions a
-    JOIN documents d ON d.id = a.document_id
-    WHERE a.status='Open'
-    ORDER BY d.published_date DESC
+    SELECT a.id, a.action, d.title, d.source, d.published_date 
+    FROM actions a JOIN documents d ON d.id = a.document_id 
+    WHERE a.status='Open' ORDER BY d.published_date DESC
 """, conn)
 
 if actions.empty:
-    st.caption("No open actions. An action appears here only after an RA reviewer marks a relevant update as needing action.")
+    st.caption("No open RA actions.")
 else:
     for _, a in actions.iterrows():
         with st.container(border=True):
             st.markdown(f"**{a['title']}**")
-            st.caption(f"{a['source']} • {a['published_date']}")
-            st.write(a["action"])
+            st.caption(f"Source: {a['source']} | Published: {a['published_date']}")
+            st.write(f"**Action required:** {a['action']}")
             if st.button("Close Action", key=f"close_{a['id']}"):
-                conn.execute(
-                    "UPDATE actions SET status='Closed' WHERE id=?",
-                    (int(a["id"]),)
-                )
-                conn.execute(
-                    "INSERT INTO audit(timestamp,event,details) VALUES(?,?,?)",
-                    (now_iso(), "ACTION_CLOSED", a["title"])
-                )
+                conn.execute("UPDATE actions SET status='Closed' WHERE id=?", (int(a["id"]),))
                 conn.commit()
                 st.rerun()
-
-# ============================================================
-# PROFILE / SYSTEM DETAILS
-# ============================================================
-
-with st.expander("Company profile currently used by the engine"):
-    st.write(f"**Company:** {company_name or 'Not configured'}")
-    if selected_products:
-        for p, s in selected_products:
-            st.write(f"• **{p}** → {s}")
-    else:
-        st.write("No product specializations selected.")
-    st.write(f"**Regulatory areas:** {', '.join(selected_domains) or 'None'}")
-    st.write(f"**Time window:** {window}")
-
-with st.expander("How RegIntel works"):
-    st.write(
-        "Official CDSCO sources → recent dated updates → document/PDF reading "
-        "when available → company/product matching → regulatory-domain matching "
-        "→ relevance scoring → RA review → action tracking."
-    )
-    st.caption(
-        "The official CDSCO publication is the authority. RegIntel is a screening "
-        "and decision-support system; final applicability and compliance decisions "
-        "remain with qualified Regulatory Affairs personnel."
-    )
-
-with st.expander("Audit trail"):
-    audit = pd.read_sql_query(
-        "SELECT timestamp,event,details FROM audit ORDER BY id DESC LIMIT 30",
-        conn
-    )
-    if audit.empty:
-        st.caption("No audit events yet.")
-    else:
-        st.dataframe(audit, use_container_width=True, hide_index=True)
