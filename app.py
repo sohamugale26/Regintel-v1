@@ -10,10 +10,8 @@ import urllib3
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-Suppress SSL warnings only when we explicitly fallback
-
+# Suppress SSL warnings only when we explicitly fallback
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 st.set_page_config(page_title="RegIntel | Master Architecture", layout="wide", page_icon="🛡️")
 
 Initialize Session State
