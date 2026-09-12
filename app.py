@@ -118,6 +118,7 @@ def format_banner_date(date_str):
             except ValueError:
                 pass
         
+        # Override to 01, sept,2026 if the date is August 2026 or older
         if parsed:
             if (parsed.year == 2026 and parsed.month < 9) or (parsed.year < 2026):
                 return "01, sept,2026"
@@ -132,6 +133,7 @@ def get_latest_cdsco_alert():
     if record:
         return record[0], format_banner_date(record[1]), record[2]
     
+    # Auto-fetch live from CDSCO if database is empty
     try:
         url = "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -162,7 +164,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- 3. COMPANY PROFILE ---
+# --- 3. COMPANY PROFILE (Visual only - feed remains unfiltered) ---
 st.sidebar.title("🏢 Company Profile")
 markets = st.sidebar.multiselect("Markets", ["India (CDSCO)", "EU (EMA)"], ["India (CDSCO)", "EU (EMA)"])
 products = st.sidebar.multiselect("Products", ["Injectables", "Oral Solids", "Biologics"], ["Injectables"])
@@ -176,8 +178,8 @@ api_key = st.sidebar.text_input("OpenAI API Key (Optional)", type="password")
 def analyze_regulatory_update(title, authority, profile_context):
     if not api_key:
         return {
-            "topic": "GMP Compliance & Quality",
-            "summary": f"Simulated Intelligence: Analyzed '{title[:45]}...' against internal baselines.",
+            "topic": "Regulatory Update",
+            "summary": f"Simulated Intelligence: Analyzed '{title[:45]}...' against internal S_26 baselines.",
             "impact": "High",
             "relevance": 85
         }
@@ -278,7 +280,7 @@ st.divider()
 
 # --- 8. COLLAPSIBLE CDSCO SEARCH SECTION ---
 with st.expander("🔍 Search CDSCO Official Repository (Click to Minimize)", expanded=True):
-    st.caption("Perform real-time document discovery. Collapse this section to view the dashboard below.")
+    st.caption("Perform real-time document discovery. Collapse this section when finished to view the dashboard below.")
     
     search_col1, search_col2 = st.columns([3.5, 1])
     with search_col1:
@@ -302,7 +304,8 @@ with st.expander("🔍 Search CDSCO Official Repository (Click to Minimize)", ex
 
 st.divider()
 
-# --- 9. MONITORING METRICS & AUDIT SECTION ---
+# --- 9. MONITORING METRICS & AUDIT SECTION (Unfiltered Feed) ---
+# Pulls directly from the database without any sidebar filters blocking visibility
 df = pd.read_sql_query("SELECT * FROM updates ORDER BY id DESC", conn)
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Total Updates", len(df))
