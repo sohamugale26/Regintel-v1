@@ -168,4 +168,4 @@ st.divider()
 
 st.subheader("📑 Audit Trail & Tracking")
 logs = pd.read_sql_query("SELECT update_id, action, user, timestamp FROM audit_logs ORDER BY id DESC", conn)
-st.dataframe(logs, use_container_width=True, hide_index=True
+st.dataframe(logs, use_container_width=True, hide_index=True)
