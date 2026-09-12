@@ -14,7 +14,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="RegIntel | Master Architecture", layout="wide", page_icon="🛡️")
 
-# Custom CSS for the Admissions-Style "Important" Banner & Blinking LIVE Indicator
+# Custom CSS for Banner, Action-Blink, and Always-On Live Dot
 st.markdown("""
 <style>
 .important-container {
@@ -60,31 +60,37 @@ st.markdown("""
 .important-link:hover {
     text-decoration: underline;
 }
-@keyframes blink-live {
-    0% { opacity: 1; }
-    50% { opacity: 0.1; }
-    100% { opacity: 1; }
+@keyframes pulse {
+    0% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(1.1); }
+    100% { opacity: 1; transform: scale(1); }
 }
-.blinking-live-badge {
+.always-live-indicator {
     display: inline-flex;
     align-items: center;
     color: #d93025;
-    font-weight: 800;
+    font-weight: 700;
     font-size: 14px;
-    animation: blink-live 0.8s infinite;
     margin-left: 15px;
+    margin-top: 15px;
 }
-.blinking-dot {
-    width: 9px;
-    height: 9px;
+.always-live-dot {
+    width: 10px;
+    height: 10px;
     background-color: #d93025;
     border-radius: 50%;
     margin-right: 6px;
+    animation: pulse 1.5s infinite;
+}
+.action-blink {
+    animation: pulse 0.5s infinite;
+    color: #d93025;
+    font-weight: bold;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. DATABASE COMPONENT (Layer 1 & 2) ---
+# --- 1. DATABASE COMPONENT ---
 def init_db():
     conn = sqlite3.connect("regintel_master.db", check_same_thread=False)
     c = conn.cursor()
@@ -112,7 +118,6 @@ def format_banner_date(date_str):
             except ValueError:
                 pass
         
-        # If notice is from August 2026 or earlier months, set to 01, sept,2026
         if parsed:
             if (parsed.year == 2026 and parsed.month < 9) or (parsed.year < 2026):
                 return "01, sept,2026"
@@ -127,7 +132,6 @@ def get_latest_cdsco_alert():
     if record:
         return record[0], format_banner_date(record[1]), record[2]
     
-    # Auto-fetch live from CDSCO if database has not been populated yet
     try:
         url = "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -158,9 +162,8 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- 3. COMPANY PROFILE & RAG CONFIGURATION ---
+# --- 3. COMPANY PROFILE ---
 st.sidebar.title("🏢 Company Profile")
-company_name = st.sidebar.text_input("Company Name", "Nova Formulation Ltd.")
 markets = st.sidebar.multiselect("Markets", ["India (CDSCO)", "EU (EMA)"], ["India (CDSCO)", "EU (EMA)"])
 products = st.sidebar.multiselect("Products", ["Injectables", "Oral Solids", "Biologics"], ["Injectables"])
 topics = st.sidebar.multiselect("Topics", ["GMP", "Clinical Trials", "Stability", "Pharmacovigilance"], ["GMP", "Stability"])
@@ -168,47 +171,32 @@ topics = st.sidebar.multiselect("Topics", ["GMP", "Clinical Trials", "Stability"
 st.sidebar.divider()
 st.sidebar.markdown("⚙️ AI & RAG Settings")
 api_key = st.sidebar.text_input("OpenAI API Key (Optional)", type="password")
-st.sidebar.info("Free Mode Active: If no API key is entered, the system uses built-in RAG simulation against file S_26.")
 
 # --- 4. AI INTELLIGENCE ENGINE ---
 def analyze_regulatory_update(title, authority, profile_context):
     if not api_key:
         return {
             "topic": "GMP Compliance & Quality",
-            "summary": f"Simulated Intelligence: Analyzed '{title[:45]}...' against internal baseline S_26 requirements.",
+            "summary": f"Simulated Intelligence: Analyzed '{title[:45]}...' against internal baselines.",
             "impact": "High",
             "relevance": 85
         }
-    
     client = OpenAI(api_key=api_key)
-    prompt = f"""
-    Analyze this {authority} regulatory update: '{title}'.
-    Company Context: {profile_context}.
-    Cross-reference against internal baselines.
-    Provide JSON output strictly with keys: 
-    'topic' (string), 
-    'summary' (1 sentence explaining what changed), 
-    'impact' (High, Medium, Low),
-    'relevance' (integer 0-100 based on company context).
-    """
+    prompt = f"Analyze {authority} update: '{title}'. Context: {profile_context}. Output JSON keys: 'topic', 'summary', 'impact', 'relevance'."
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": "You are an expert Regulatory Intelligence AI."},
-                {"role": "user", "content": prompt}
-            ]
+            messages=[{"role": "system", "content": "You are a Regulatory AI."}, {"role": "user", "content": prompt}]
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
         return {"topic": "Error", "summary": str(e), "impact": "Low", "relevance": 0}
 
-# --- 5. SOURCE MONITOR (CDSCO SCRAPER) ---
+# --- 5. SOURCE MONITOR (SCRAPER) ---
 def scrape_cdsco(profile_context):
     new_updates = []
     c = conn.cursor()
-    
     try:
         url = "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -228,24 +216,21 @@ def scrape_cdsco(profile_context):
                 if not c.fetchone():
                     ai_data = analyze_regulatory_update(title, "CDSCO", profile_context)
                     c.execute("INSERT INTO updates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", 
-                             (update_id, "CDSCO", title, date, doc_url, 
-                              ai_data.get('topic'), ai_data.get('summary'), ai_data.get('impact'), 
-                              ai_data.get('relevance'), "Pending Review"))
+                             (update_id, "CDSCO", title, date, doc_url, ai_data.get('topic'), ai_data.get('summary'), ai_data.get('impact'), ai_data.get('relevance'), "Pending Review"))
                     new_updates.append(update_id)
         conn.commit()
     except Exception as e:
-        st.error(f"Source Monitor Error: {e}")
+        st.error(f"Scraper Error: {e}")
     return len(new_updates)
 
-# --- 6. LIVE CDSCO DOCUMENT SEARCH ENGINE (NO MOCK DATA) ---
+# --- 6. LIVE CDSCO SEARCH ENGINE ---
 def search_cdsco_live(search_term):
     targets = [
         ("Public Notices", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/"),
         ("Circulars", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Circulars/")
     ]
     results = []
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    
+    headers = {'User-Agent': 'Mozilla/5.0'}
     for category, endpoint in targets:
         try:
             res = requests.get(endpoint, headers=headers, verify=False, timeout=12)
@@ -257,110 +242,90 @@ def search_cdsco_live(search_term):
                         cols = row.find_all('td')
                         if len(cols) >= 3:
                             title = cols[1].text.strip()
-                            date = cols[2].text.strip()
                             if search_term.lower() in title.lower():
                                 link = cols[1].find('a') or row.find('a')
                                 doc_url = urllib.parse.urljoin("https://cdsco.gov.in", link['href']) if link and link.has_attr('href') else endpoint
-                                results.append({
-                                    "Category": category,
-                                    "Title": title,
-                                    "Published Date": date,
-                                    "Document Link": doc_url
-                                })
+                                results.append({"Category": category, "Title": title, "Published Date": cols[2].text.strip(), "Document Link": doc_url})
         except Exception:
             continue
     return results
 
 # --- 7. UI DASHBOARD & CONTROLS ---
-st.title("🛡️ RegIntel Master Platform")
-profile_context = f"Markets: {markets}, Products: {products}, Topics: {topics}"
+# Header with always-on LIVE dot
+st.markdown("""
+<div style="display: flex; align-items: flex-start;">
+    <h1 style="margin-bottom: 0;">🛡️ RegIntel Master Platform</h1>
+    <div class="always-live-indicator">
+        <span class="always-live-dot"></span> System Live
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-# Execution Panel with Blinking LIVE Symbol
+profile_context = f"Markets: {markets}, Products: {products}, Topics: {topics}"
 button_col, status_col = st.columns([1.6, 3])
 
 with button_col:
     execute_run = st.button("🔄 Execute Source Monitor")
 
-live_indicator_slot = status_col.empty()
-
+live_action_slot = status_col.empty()
 if execute_run:
-    live_indicator_slot.markdown("""
-        <div class="blinking-live-badge">
-            <span class="blinking-dot"></span> LIVE: Connecting to CDSCO Public Notice Servers...
-        </div>
-    """, unsafe_allow_html=True)
-    
+    live_action_slot.markdown('<div class="action-blink">🔴 SCRAPING LIVE... Connecting to CDSCO...</div>', unsafe_allow_html=True)
     count = scrape_cdsco(profile_context)
-    live_indicator_slot.empty()
-    st.success(f"Lifecycle Complete: {count} new regulatory documents fetched directly from CDSCO.")
+    live_action_slot.empty()
+    st.success(f"Complete: {count} new documents fetched from CDSCO.")
 
 st.divider()
 
-# --- 8. LIVE CDSCO DOCUMENT SEARCH SECTION ---
-st.subheader("🔍 Search CDSCO Official Repository")
-st.caption("Perform real-time document discovery across CDSCO official circulars and notices.")
+# --- 8. COLLAPSIBLE CDSCO SEARCH SECTION ---
+with st.expander("🔍 Search CDSCO Official Repository (Click to Minimize)", expanded=True):
+    st.caption("Perform real-time document discovery. Collapse this section to view the dashboard below.")
+    
+    search_col1, search_col2 = st.columns([3.5, 1])
+    with search_col1:
+        search_query = st.text_input("Enter regulatory keyword", placeholder="e.g. Clinical Trials, Vaccine")
+    with search_col2:
+        search_clicked = st.button("Search CDSCO")
 
-search_col1, search_col2 = st.columns([3.5, 1])
-with search_col1:
-    search_query = st.text_input("Enter regulatory keyword, substance, or circular topic", placeholder="e.g. Clinical Trials, Stability, Medical Devices, Vaccine")
-with search_col2:
-    search_clicked = st.button("Search CDSCO")
-
-if search_clicked and search_query:
-    with st.spinner("Scraping live CDSCO registers for matching records..."):
-        matched_docs = search_cdsco_live(search_query)
-        if matched_docs:
-            st.success(f"Found {len(matched_docs)} direct CDSCO documents for '{search_query}'.")
-            for doc in matched_docs:
-                with st.container():
+    if search_clicked and search_query:
+        with st.spinner("Scraping live CDSCO registers..."):
+            matched_docs = search_cdsco_live(search_query)
+            if matched_docs:
+                st.success(f"Found {len(matched_docs)} documents for '{search_query}'.")
+                for doc in matched_docs:
                     c_badge, c_body, c_btn = st.columns([1, 4, 1])
                     c_badge.info(doc["Category"])
                     c_body.markdown(f"**{doc['Title']}**  \n*Date: {doc['Published Date']}*")
                     c_btn.link_button("View Doc", doc["Document Link"])
                     st.divider()
-        else:
-            st.warning(f"No official documents matching '{search_query}' were found on live CDSCO public listing pages.")
+            else:
+                st.warning("No official documents found.")
 
 st.divider()
 
 # --- 9. MONITORING METRICS & AUDIT SECTION ---
 df = pd.read_sql_query("SELECT * FROM updates ORDER BY id DESC", conn)
-
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Total Updates", len(df))
-col2.metric("High Relevance (>80)", len(df[df['relevance_score'] >= 80]) if not df.empty else 0)
-col3.metric("Pending RA Reviews", len(df[df['status'] == 'Pending Review']) if not df.empty else 0)
-col4.metric("Monitored Sources", "CDSCO Notices & Circulars")
+col2.metric("High Relevance", len(df[df['relevance_score'] >= 80]) if not df.empty else 0)
+col3.metric("Pending Reviews", len(df[df['status'] == 'Pending Review']) if not df.empty else 0)
+col4.metric("Sources", "CDSCO Live")
 
 st.subheader("📋 Regulatory Intelligence Records")
-
 if not df.empty:
     for _, row in df.iterrows():
         rel_color = "🔴" if row['relevance_score'] >= 80 else ("🟡" if row['relevance_score'] >= 50 else "🟢")
-        
         with st.expander(f"{rel_color} [{row['authority']}] {row['title']} — {row['date']}"):
             meta_col, ai_col, action_col = st.columns([1.5, 2, 1])
-            
             with meta_col:
-                st.markdown("**Metadata**")
-                st.write(f"Document Type: Official Notice")
                 st.write(f"Topic: {row['topic']}")
                 st.markdown(f"[View Official Evidence]({row['url']})")
-                
             with ai_col:
-                st.markdown("**AI Intelligence Engine**")
-                st.write(f"Relevance Score: {row['relevance_score']}/100")
-                st.write(f"Impact: {row['impact']}")
+                st.write(f"Relevance: {row['relevance_score']}/100 | Impact: {row['impact']}")
                 st.write(f"Summary: {row['summary']}")
-                st.caption("Cross-referenced against company profile and file S_26.")
-                
             with action_col:
-                st.markdown("**RA Workflow**")
                 options = ["Pending Review", "Action Required", "Informational", "Not Relevant"]
                 current_idx = options.index(row['status']) if row['status'] in options else 0
-                
                 new_status = st.selectbox("Decision", options, index=current_idx, key=row['id'])
-                
                 if new_status != row['status']:
                     c = conn.cursor()
                     c.execute("UPDATE updates SET status=? WHERE id=?", (new_status, row['id']))
@@ -369,10 +334,4 @@ if not df.empty:
                     conn.commit()
                     st.rerun()
 else:
-    st.info("The Regulatory Knowledge Base is currently empty. Run the Source Monitor above to populate data.")
-
-st.divider()
-
-st.subheader("📑 Audit Trail & Tracking")
-logs = pd.read_sql_query("SELECT update_id, action, user, timestamp FROM audit_logs ORDER BY id DESC", conn)
-st.dataframe(logs, use_container_width=True, hide_index=True)
+    st.info("Run the Source Monitor to populate data.")
