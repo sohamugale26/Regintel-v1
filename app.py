@@ -11,8 +11,8 @@ import time
 # Suppress SSL warnings for government websites
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Page Config
-st.set_page_config(page_title="RegIntel | CDSCO Raw Monitor", layout="wide", page_icon="🛡️")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="CDSCO - RegIntel", layout="wide", page_icon="🛡️")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -24,6 +24,11 @@ st.markdown("""
     border-bottom: 2px solid #f0f2f6;
     padding-bottom: 10px;
     margin-bottom: 20px;
+}
+.main-title {
+    margin: 0;
+    font-size: 32px;
+    font-weight: 700;
 }
 .live-date {
     font-size: 18px;
@@ -54,7 +59,7 @@ st.markdown("""
     color: #d93025;
     font-weight: 600;
     white-space: nowrap;
-    animation: scroll-left 20s linear infinite;
+    animation: scroll-left 25s linear infinite;
 }
 @keyframes scroll-left {
     0% { transform: translateX(100%); }
@@ -65,6 +70,7 @@ st.markdown("""
     font-weight: bold;
     font-size: 16px;
     animation: blinker 0.8s linear infinite;
+    padding: 10px 0;
 }
 @keyframes blinker {
     50% { opacity: 0; }
@@ -73,10 +79,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- SESSION STATES ---
-if 'marquee_updates' not in st.session_state:
-    st.session_state.marquee_updates = []
+if 'marquee_message' not in st.session_state:
+    st.session_state.marquee_message = ""
 
-# --- ROBUST BROWSER HEADERS ---
+# --- BROWSER HEADERS ---
 BROWSER_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -92,7 +98,7 @@ CDSCO_REGISTERS = {
 
 # --- 1. DATABASE COMPONENT (Raw Data Only) ---
 def init_db():
-    conn = sqlite3.connect("regintel_raw_v1.db", check_same_thread=False)
+    conn = sqlite3.connect("regintel_raw_v3.db", check_same_thread=False)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS updates
                  (id TEXT PRIMARY KEY, category TEXT, title TEXT, date TEXT, url TEXT, status TEXT)''')
@@ -113,17 +119,23 @@ def parse_db_date(date_str):
             pass
     return datetime(1900, 1, 1)
 
-# --- 3. CORE SCRAPER (Strict 1 Month & Raw Capture) ---
-def scrape_cdsco_category(category_name):
+# --- 3. CORE SCRAPER (Dynamic Timeframe Matcher) ---
+def scrape_cdsco_category(category_name, timeframe):
     url = CDSCO_REGISTERS.get(category_name)
     if not url:
         return []
     
     new_records = []
     c = conn.cursor()
-    
     current_date = datetime.now()
-    thirty_days_ago = current_date - timedelta(days=30)
+    
+    # Determine the time delta for the notice box
+    if timeframe == "Past Week":
+        time_limit = current_date - timedelta(days=7)
+    elif timeframe == "Past Month":
+        time_limit = current_date - timedelta(days=30)
+    else: # Past Year
+        time_limit = current_date - timedelta(days=365)
     
     try:
         res = requests.get(url, headers=BROWSER_HEADERS, verify=False, timeout=15)
@@ -131,11 +143,10 @@ def scrape_cdsco_category(category_name):
             soup = BeautifulSoup(res.text, 'html.parser')
             tables = soup.find_all('table')
             if tables:
-                # Iterate rows
                 for row in tables[0].find_all('tr')[1:]:
                     cols = row.find_all(['td', 'th'])
                     if len(cols) >= 3:
-                        # Capture EVERYTHING, even if blank/dot
+                        # Capture EVERYTHING raw
                         title = cols[1].get_text(separator=" ", strip=True)
                         if not title or title == ".":
                             title = "[Blank or Unnamed Document Submitted]"
@@ -143,20 +154,21 @@ def scrape_cdsco_category(category_name):
                         date_val = cols[2].get_text(strip=True)
                         parsed_date = parse_db_date(date_val)
                         
-                        # STRICT 1-MONTH FILTER (Ignore old pinned data)
-                        if parsed_date >= thirty_days_ago and parsed_date <= current_date:
-                            link_tag = cols[1].find('a') or cols[-1].find('a') or row.find('a')
-                            doc_url = urllib.parse.urljoin("https://cdsco.gov.in", link_tag['href']) if (link_tag and link_tag.has_attr('href')) else url
+                        link_tag = cols[1].find('a') or cols[-1].find('a') or row.find('a')
+                        doc_url = urllib.parse.urljoin("https://cdsco.gov.in", link_tag['href']) if (link_tag and link_tag.has_attr('href')) else url
+                        
+                        clean_date = date_val.replace('-', '').replace('/', '')
+                        update_id = f"CDSCO-{category_name[:3].upper()}-{clean_date}-{abs(hash(title)) % 100000}"
+                        
+                        # Store in database
+                        c.execute("SELECT id FROM updates WHERE id=?", (update_id,))
+                        if not c.fetchone():
+                            c.execute("INSERT INTO updates VALUES (?, ?, ?, ?, ?, ?)",
+                                      (update_id, category_name, title, date_val, doc_url, "Unread"))
                             
-                            clean_date = date_val.replace('-', '').replace('/', '')
-                            update_id = f"CDSCO-{category_name[:3].upper()}-{clean_date}-{abs(hash(title)) % 100000}"
-                            
-                            # Insert if new
-                            c.execute("SELECT id FROM updates WHERE id=?", (update_id,))
-                            if not c.fetchone():
-                                c.execute("INSERT INTO updates VALUES (?, ?, ?, ?, ?, ?)",
-                                          (update_id, category_name, title, date_val, doc_url, "Unread"))
-                                new_records.append(f"[{category_name}] {title} ({date_val})")
+                        # If it falls within the selected execution timeframe, add to marquee array
+                        if parsed_date >= time_limit and parsed_date <= current_date:
+                            new_records.append(f"[{category_name}] {title} ({date_val})")
                 conn.commit()
     except Exception as e:
         pass
@@ -168,69 +180,72 @@ current_live_date = datetime.now().strftime("%A, %B %d, %Y")
 
 st.markdown(f"""
 <div class="header-container">
-    <h1 style="margin: 0;">🛡️ CDSCO Raw Monitor</h1>
+    <h1 class="main-title">🛡️ CDSCO - RegIntel</h1>
     <div class="live-date">🗓️ Live Date: {current_live_date}</div>
 </div>
 """, unsafe_allow_html=True)
 
-# --- 5. RED MARQUEE TICKER (Conditional) ---
-if st.session_state.marquee_updates:
-    marquee_string = " &nbsp;&nbsp;&nbsp; | &nbsp;&nbsp;&nbsp; ".join(st.session_state.marquee_updates)
+# --- 5. RED MARQUEE TICKER (Shows only when executed) ---
+if st.session_state.marquee_message:
     st.markdown(f"""
     <div class="marquee-container">
-        <div class="marquee-badge">NEW PUBLICATION</div>
-        <div class="marquee-text">{marquee_string}</div>
+        <div class="marquee-badge">LIVE PUBLICATION NOTICE</div>
+        <div class="marquee-text">{st.session_state.marquee_message}</div>
     </div>
     """, unsafe_allow_html=True)
 
-# --- 6. SCRAPER CONTROLS (Dropdown Category Selector) ---
+# --- 6. SCRAPER CONTROLS (Dropdown + Timeframe) ---
 st.subheader("📡 Fetch Latest Data")
 fetch_col1, fetch_col2, fetch_col3 = st.columns([2, 2, 4])
 
 with fetch_col1:
-    target_category = st.selectbox("Select Target Registry to Execute:", ["Public Notices", "Circulars", "Safety Alerts"])
+    target_category = st.selectbox("Select Target Registry:", ["Public Notices", "Circulars", "Safety Alerts"])
 
 with fetch_col2:
+    execution_timeframe = st.selectbox("Select Timeframe:", ["Past Week", "Past Month", "Past Year"])
+
+with fetch_col3:
     st.write("") 
     st.write("") 
     execute_btn = st.button("▶ Execute Live Scrape")
 
-# Placeholder for the blinking live light
+# Placeholder for blinking light
 live_light_placeholder = st.empty()
 
 if execute_btn:
-    # 1. Turn on blinking light
+    # Turn on blinking red light
     live_light_placeholder.markdown('<div class="blink-indicator">🔴 SCRAPING LIVE... Connecting to CDSCO server...</div>', unsafe_allow_html=True)
     
-    # 2. Fetch data (Scrape)
-    fetched_new_items = scrape_cdsco_category(target_category)
+    # Scrape data based on timeframe
+    fetched_new_items = scrape_cdsco_category(target_category, execution_timeframe)
     
-    # 3. Update Marquee logic
+    # Update marquee message professionally
     if fetched_new_items:
-        st.session_state.marquee_updates = fetched_new_items
+        st.session_state.marquee_message = " &nbsp;&nbsp;&nbsp; | &nbsp;&nbsp;&nbsp; ".join(fetched_new_items)
     else:
-        st.session_state.marquee_updates = [] # Empty it if nothing new is found
+        st.session_state.marquee_message = "No new regulatory updates published recently in the selected timeframe."
         
-    # 4. Turn off light and reload to show changes
+    # Turn off light and reload UI
     live_light_placeholder.empty()
     st.rerun()
 
 st.divider()
 
-# --- 7. HISTORICAL ARCHIVE SEARCH ---
+# --- 7. HISTORICAL ARCHIVE SEARCH (Restored Year) ---
 with st.expander("🔍 Search Database Archive", expanded=False):
-    s_col1, s_col2, s_col3 = st.columns([3, 1, 1])
+    s_col1, s_col2, s_col3, s_col4 = st.columns([3, 1.5, 1, 1])
     with s_col1:
         q = st.text_input("Enter regulatory keyword", placeholder="e.g. Schedule M, Ethics...")
     with s_col2:
-        search_cat = st.selectbox("Search In:", ["All Categories", "Public Notices", "Circulars", "Safety Alerts"])
+        search_cat = st.selectbox("Search Category:", ["All Categories", "Public Notices", "Circulars", "Safety Alerts"])
     with s_col3:
+        search_year = st.selectbox("Select Year:", ["All", "2026", "2025", "2024", "2023"])
+    with s_col4:
         st.write("")
         st.write("")
         s_btn = st.button("Search Archive")
         
     if s_btn and q:
-        # Construct Query
         query = "SELECT * FROM updates WHERE title LIKE ?"
         params = [f"%{q}%"]
         
@@ -242,9 +257,15 @@ with st.expander("🔍 Search Database Archive", expanded=False):
         c.execute(query, params)
         matches = c.fetchall()
         
-        if matches:
-            st.success(f"Found {len(matches)} matching records.")
-            for m in matches:
+        # Filter by year locally
+        final_matches = []
+        for m in matches:
+            if search_year == "All" or search_year in m[3]:
+                final_matches.append(m)
+        
+        if final_matches:
+            st.success(f"Found {len(final_matches)} matching records.")
+            for m in final_matches:
                 st.markdown(f"**[{m[1]}]** {m[2]}  \n*Published:* {m[3]} | [View Document]({m[4]})")
                 st.divider()
         else:
@@ -252,40 +273,20 @@ with st.expander("🔍 Search Database Archive", expanded=False):
 
 st.divider()
 
-# --- 8. RAW DATA FEED (Last 30 Days) ---
+# --- 8. RAW DATA FEED (Strict 1-Month Window) ---
 st.subheader("📋 Recent Records Feed (Strict 1-Month Window)")
 
-feed_cat = st.selectbox("Filter Feed View:", ["All Categories", "Public Notices", "Circulars", "Safety Alerts"])
-
-# Load all records
+# Filter strictly to past 30 days regardless of execution dropdown
 df = pd.read_sql_query("SELECT * FROM updates ORDER BY date DESC", conn)
 
 if not df.empty:
-    # Calculate days old
     df['parsed_date'] = df['date'].apply(parse_db_date)
     current_date = datetime.now()
     df['days_old'] = (current_date - df['parsed_date']).dt.days
     
-    # Strictly isolate <= 30 days
+    # STRICT 30-DAY LOCK
     display_df = df[df['days_old'] <= 30].copy()
     
-    # Filter by category if requested
-    if feed_cat != "All Categories":
-        display_df = display_df[display_df['category'] == feed_cat]
-        
     if display_df.empty:
-        st.info("No documents have been published within the last 1 month for this selection.")
+        st.info("No documents have been published on the portal within the exact last 1 month (30 days).")
     else:
-        st.metric(f"Total Entries ({feed_cat})", len(display_df))
-        
-        # Render the raw feed
-        for _, row in display_df.iterrows():
-            with st.expander(f"[{row['category']}] {row['title']} — {row['date']}"):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.write(f"**Exact Title Captured:** {row['title']}")
-                    st.write(f"**Publish Date:** {row['date']}")
-                with col2:
-                    st.link_button("📄 Open Official Document", row['url'])
-else:
-    st.info("Database is empty. Please select a category above and execute the scrape.")
