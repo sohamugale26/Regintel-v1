@@ -289,5 +289,5 @@ if not df.empty:
     
     if display_df.empty:
         st.info("No documents have been published on the portal within the exact last 1 month (30 days).")
-    else:
-        st.info("Database is empty. Please select a category above and execute the scrape.")
+else:
+    st.info("Database is empty. Please select a category above and execute the scrape.")
