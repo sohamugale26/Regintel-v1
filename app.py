@@ -1,8 +1,9 @@
+import hashlib
 import json
 import sqlite3
-import urllib.parse
 from datetime import datetime
-import hashlib
+from urllib.parse import urljoin
+
 import pandas as pd
 import requests
 import streamlit as st
@@ -10,284 +11,350 @@ import urllib3
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-# Suppress SSL warnings only when we explicitly fallback
+# Government sites often have broken SSL chains; warnings are suppressed (see note in sidebar).
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-st.set_page_config(page_title="RegIntel | Master Architecture", layout="wide", page_icon="🛡️")
 
-Initialize Session State
+st.set_page_config(page_title="RegIntel | Regulatory Intelligence", layout="wide", page_icon="🛡️")
 
-if 'executed' not in st.session_state:
-st.session_state.executed = False
-if 'source_status' not in st.session_state:
-st.session_state.source_status = {
-"Public Notices": "⚪ Standby",
-"Circulars": "⚪ Standby",
-"Safety Alerts": "⚪ Standby"
-}
+CDSCO_URL = "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/"
+STATUS_OPTIONS = ["Pending Review", "Action Required", "Informational", "Not Relevant"]
+STATUS_ICONS = {"Pending Review": "⏳", "Action Required": "🚨", "Informational": "ℹ️", "Not Relevant": "🗑️"}
 
---- 1. CSS INJECTION (Dark/Light Mode Compatible) ---
+# ------------------------------------------------------------------ STYLING
+st.markdown(
+    """
+    <style>
+    .hero {background: linear-gradient(120deg,#0f2027,#203a43,#2c5364); padding: 28px 32px;
+           border-radius: 18px; color: #fff; margin-bottom: 18px;}
+    .hero h1 {margin: 0; font-size: 2.1rem;}
+    .hero p {margin: 6px 0 0; opacity: .85; font-size: 1.02rem;}
+    .pill {display:inline-block; padding:2px 12px; border-radius:999px; font-size:.78rem;
+           font-weight:600; margin-right:6px; color:#fff;}
+    .pill-high {background:#e53935;} .pill-med {background:#fb8c00;} .pill-low {background:#43a047;}
+    .pill-topic {background:#3949ab;}
+    div[data-testid="stMetric"] {background: rgba(120,140,170,.10); border: 1px solid rgba(120,140,170,.25);
+           padding: 14px 18px; border-radius: 14px;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-st.markdown("""
 
-<style>  
-.important-container {  
-    display: flex; align-items: center; background-color: var(--secondary-background-color);  
-    border: 1px solid var(--border-color, #e0c8a8); border-radius: 4px; padding: 8px 12px;  
-    margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; position: relative; white-space: nowrap;  
-}  
-.important-badge {  
-    background-color: #b7282e; color: #ffffff; font-weight: 700; font-size: 13px;  
-    padding: 3px 10px; border-radius: 3px; margin-right: 12px; z-index: 2; position: relative;  
-    box-shadow: 2px 0 5px var(--secondary-background-color);  
-}  
-.marquee-wrapper {  
-    display: inline-block; white-space: nowrap; animation: marquee 25s linear infinite; padding-left: 20px;  
-}  
-.marquee-wrapper:hover { animation-play-state: paused; }  
-@keyframes marquee { 0% { transform: translateX(100%); } 100% { transform: translateX(-100%); } }  
-.important-new { color: #b7282e; font-weight: 700; font-size: 13px; margin-right: 6px; }  
-.important-link { color: var(--text-color); text-decoration: none; font-weight: 600; margin-right: 20px; }  
-.important-link:hover { text-decoration: underline; color: var(--primary-color); }  
-@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }  
-.always-live-indicator { display: inline-flex; align-items: center; color: #d93025; font-weight: 700; font-size: 14px; margin-left: 15px; margin-top: 15px; }  
-.always-live-dot { width: 10px; height: 10px; background-color: #d93025; border-radius: 50%; margin-right: 6px; animation: pulse 1.5s infinite; }  
-.ai-disclaimer { font-size: 12px; color: #888; font-style: italic; }  
-</style>  """, unsafe_allow_html=True)
+# ------------------------------------------------------------------ DATABASE
+@st.cache_resource
+def get_conn():
+    # check_same_thread=False: Streamlit runs callbacks on different threads.
+    conn = sqlite3.connect("regintel_master.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS updates
+           (id TEXT PRIMARY KEY, authority TEXT, title TEXT, date TEXT, url TEXT, topic TEXT,
+            summary TEXT, impact TEXT, relevance_score INTEGER, status TEXT)"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS audit_logs
+           (id INTEGER PRIMARY KEY AUTOINCREMENT, update_id TEXT, action TEXT, user TEXT, timestamp TEXT)"""
+    )
+    conn.commit()
+    return conn
 
---- 2. DATABASE COMPONENT (V3 Architecture) ---
 
-def init_db():
-conn = sqlite3.connect("regintel_master_v3.db", check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS updates
-(id TEXT PRIMARY KEY, authority TEXT, doc_type TEXT, title TEXT,
-published_date_original TEXT, published_date_normalized TEXT,
-url TEXT, topic TEXT, summary TEXT, change_type TEXT, impact TEXT,
-why_relevant TEXT, required_action TEXT, relevance_score INTEGER, status TEXT)''')
+conn = get_conn()
 
-c.execute('''CREATE TABLE IF NOT EXISTS audit_logs  
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, update_id TEXT, previous_status TEXT,  
-              new_status TEXT, user TEXT, timestamp TEXT, comment TEXT)''')  
-conn.commit()  
-return conn
 
-conn = init_db()
-
---- 3. UTILITIES (Deterministic IDs & Strict Dates) ---
-
-def generate_document_id(authority, doc_type, date_str, title, url):
-raw = f"{authority}|{doc_type}|{date_str}|{title}|{url}"
-return hashlib.sha256(raw.encode()).hexdigest()
-
-def normalize_date(date_str):
-if not date_str:
-return None
-clean_date = date_str.replace('/', '-').strip()
-for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%b %d, %Y", "%B %d, %Y"):
-try:
-return datetime.strptime(clean_date, fmt).strftime("%Y-%m-%d")
-except ValueError:
-continue
-return None
-
-def fetch_with_ssl_fallback(url):
-"""Tries strict SSL first, falls back to unverified if Indian govt server fails, logs errors."""
-headers = {'User-Agent': 'Mozilla/5.0'}
-try:
-return requests.get(url, headers=headers, verify=True, timeout=12)
-except requests.exceptions.SSLError:
-# Fallback for known CDSCO certificate issues
-return requests.get(url, headers=headers, verify=False, timeout=12)
-except Exception as e:
-raise e
-
---- 4. AI INTELLIGENCE ENGINE (100-Point Model) ---
-
-def fallback_baseline_analysis(title, selected_topics):
-topic = "General Regulatory"
-if any(k in title.lower() for k in ["gmp", "manufacturing", "quality"]): topic = "GMP"
-if any(k in title.lower() for k in ["trial", "ethics"]): topic = "Clinical Trials"
-
-return {  
-    "regulatory_topic": topic, "change_type": "Administrative",   
-    "summary": "Baseline tagging applied due to missing API key.",   
-    "impact": "Low", "why_relevant": "Broad matching applied.",   
-    "required_action": "Review document manually to assess impact.", "relevance_score": 30  
-}
-
-def analyze_regulatory_update(title, authority, doc_type, profile_context, selected_topics, api_key):
-if not api_key:
-return fallback_baseline_analysis(title, selected_topics)
-
-client = OpenAI(api_key=api_key)  
-system_prompt = """You are an expert Regulatory Affairs (RA) AI assistant.  
-Assess the regulatory document based strictly on the title. If a field cannot be deduced, return null. Do NOT fabricate obligations.  
-Calculate relevance (0-100) using this matrix: Market Match (25), Product Match (25), Topic Match (25), Activity Relevance (15), Criticality (10).  
-Output strictly in this JSON format:  
-{ "regulatory_topic": "string", "change_type": "New Requirement|Amendment|Revision|Guidance|Safety Update|Administrative",  
-  "summary": "What changed? (max 2 sentences)", "impact": "High|Moderate|Low",   
-  "why_relevant": "Why does this matter to the company? (1 sentence)",   
-  "required_action": "Specific RA/QA action required", "relevance_score": integer }"""  
-
-user_prompt = f"Authority: {authority}\nType: {doc_type}\nTitle: '{title}'\nCompany Context: {profile_context}"  
-try:  
-    response = client.chat.completions.create(  
-        model="gpt-4o-mini", response_format={"type": "json_object"},  
-        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]  
-    )  
-    return json.loads(response.choices[0].message.content)  
-except Exception as e:  
-    return fallback_baseline_analysis(title, selected_topics)
-
---- 5. SOURCE MONITOR (Error-Resilient & Full Pagination Prep) ---
-
-def scrape_cdsco_all(profile_context, selected_topics, api_key):
-endpoints = {
-"Public Notices": ("Public Notice", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Public-Notices/"),
-"Circulars": ("Circular", "https://cdsco.gov.in/opencms/opencms/en/Notifications/Circulars/"),
-"Safety Alerts": ("Safety Alert", "https://cdsco.gov.in/opencms/opencms/en/Alerts/")
-}
-
-new_updates = 0  
-c = conn.cursor()  
-  
-for status_key, (doc_type, url) in endpoints.items():  
-    try:  
-        res = fetch_with_ssl_fallback(url)  
-        if res.status_code == 200:  
-            soup = BeautifulSoup(res.text, 'html.parser')  
-            # Fetch all rows, not just top 7  
-            for row in soup.find_all('tr')[1:]:   
-                cols = row.find_all('td')  
-                if len(cols) >= 3:  
-                    title = cols[1].text.strip()  
-                    date_str = cols[2].text.strip()  
-                    link_tag = cols[1].find('a') or row.find('a')  
-                    doc_url = urllib.parse.urljoin("https://cdsco.gov.in", link_tag['href']) if link_tag and link_tag.has_attr('href') else url  
-                      
-                    update_id = generate_document_id("CDSCO", doc_type, date_str, title, doc_url)  
-                      
-                    c.execute("SELECT id FROM updates WHERE id=?", (update_id,))  
-                    if not c.fetchone():  
-                        ai_data = analyze_regulatory_update(title, "CDSCO", doc_type, profile_context, selected_topics, api_key)  
-                        norm_date = normalize_date(date_str)  
-                          
-                        c.execute('''INSERT INTO updates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',   
-                                 (update_id, "CDSCO", doc_type, title, date_str, norm_date, doc_url,   
-                                  ai_data.get('regulatory_topic'), ai_data.get('summary'), ai_data.get('change_type'),  
-                                  ai_data.get('impact'), ai_data.get('why_relevant'), ai_data.get('required_action'),  
-                                  ai_data.get('relevance_score'), "Pending Review"))  
-                        new_updates += 1  
-            conn.commit()  
-            st.session_state.source_status[status_key] = "🟢 Available"  
-        else:  
-            st.session_state.source_status[status_key] = "🔴 Unavailable (Bad Status)"  
-    except Exception as e:  
-        st.session_state.source_status[status_key] = "🔴 Error (Connection)"  
-          
-return new_updates
-
---- 6. SIDEBAR & DASHBOARD SETUP ---
-
+# ------------------------------------------------------------------ SIDEBAR
 st.sidebar.title("🏢 Company Profile")
-markets = st.sidebar.multiselect("Markets", ["India (CDSCO)"], ["India (CDSCO)"])
+company_name = st.sidebar.text_input("Company Name", "Nova Formulation Ltd.")
+markets = st.sidebar.multiselect("Markets", ["India (CDSCO)", "EU (EMA)"], ["India (CDSCO)"])
 products = st.sidebar.multiselect("Products", ["Injectables", "Oral Solids", "Biologics"], ["Injectables"])
-topics = st.sidebar.multiselect("Topics", ["GMP", "Clinical Trials", "Stability", "Pharmacovigilance"], ["GMP", "Stability"])
+topics = st.sidebar.multiselect(
+    "Topics", ["GMP", "Clinical Trials", "Stability", "Pharmacovigilance"], ["GMP", "Stability"]
+)
+
 st.sidebar.divider()
-api_key = st.sidebar.text_input("OpenAI API Key (Required for deep analysis)", type="password")
-
-header_col1, header_col2 = st.columns([3, 1])
-with header_col1:
-st.markdown("""<div style="display: flex; align-items: flex-start;"><h1 style="margin-bottom: 0;">🛡️ RegIntel Master Platform</h1><div class="always-live-indicator"><span class="always-live-dot"></span> Source Monitor Ready</div></div>""", unsafe_allow_html=True)
-with header_col2:
-st.markdown(f"<div style='text-align: right; margin-top: 25px; color: #5f6368; font-weight: 500;'>{datetime.now().strftime('%Y-%m-%d %H:%M')}</div>", unsafe_allow_html=True)
-
-Important Marquee
-
-c = conn.cursor()
-c.execute("SELECT doc_type, title, published_date_original, url FROM updates ORDER BY id DESC LIMIT 15")
-marquee_html = ""
-for doc_type, title, date_str, url in c.fetchall():
-emoji = "🔴" if doc_type == "Safety Alert" else ("🟡" if doc_type == "Circular" else "🟢")
-marquee_html += f"""<span class="important-new">New!</span><a class="important-link" href="{url}" target="_blank">{emoji} {doc_type}: {title} [{date_str}]</a>"""
-if not marquee_html: marquee_html = "<span>No intelligence gathered yet. Run the monitor.</span>"
-
-st.markdown(f"""<div class="important-container"><div class="important-badge">Important</div><div class="marquee-wrapper">{marquee_html}</div></div>""", unsafe_allow_html=True)
-
-Execution Controls
-
-profile_context = f"Markets: {markets}, Products: {products}, Topics: {topics}"
-b_col, stat_col1, stat_col2, stat_col3 = st.columns([2, 1, 1, 1])
-
-with b_col:
-if st.button("🔄 Execute Source Monitor"):
-with st.spinner("MONITORING SOURCES..."):
-count = scrape_cdsco_all(profile_context, topics, api_key)
-st.session_state.executed = True
-st.success(f"Radar Complete: {count} new regulatory documents fetched.")
-
-with stat_col1: st.markdown(f"Notices: {st.session_state.source_status['Public Notices']}")
-with stat_col2: st.markdown(f"Circulars: {st.session_state.source_status['Circulars']}")
-with stat_col3: st.markdown(f"Alerts: {st.session_state.source_status['Safety Alerts']}")
-
-st.divider()
-
---- 7. REGULATORY INTELLIGENCE FEED (Professional Card Layout) ---
-
-st.subheader("📋 Regulatory Intelligence Radar")
-
-if not st.session_state.executed:
-st.info("🕒 Awaiting Execution. Press 'Execute Source Monitor' above to scan active updates.")
+st.sidebar.subheader("⚙️ AI Settings")
+api_key = st.sidebar.text_input("OpenAI API Key (optional)", type="password")
+if api_key:
+    st.sidebar.success("AI mode: GPT-4o-mini")
 else:
-df = pd.read_sql_query("SELECT * FROM updates ORDER BY published_date_normalized DESC NULLS LAST", conn)
+    st.sidebar.info("Free mode: rule-based scoring against your company profile.")
+st.sidebar.caption("⚠️ SSL verification is disabled for CDSCO requests (government certificate issues).")
 
-if not df.empty:  
-    # High Level Metrics  
-    m1, m2, m3, m4 = st.columns(4)  
-    m1.metric("Total Updates", len(df))  
-    m2.metric("High Priority", len(df[df['relevance_score'] >= 80]))  
-    m3.metric("Action Required", len(df[df['status'] == 'Action Required']))  
-    m4.metric("Pending Review", len(df[df['status'] == 'Pending Review']))  
-    st.write("")  
+if "EU (EMA)" in markets:
+    st.sidebar.warning("EMA monitoring isn't implemented yet. Only CDSCO is scraped.")
 
-    for _, row in df.iterrows():  
-        rel_color = "🔴 HIGH PRIORITY" if row['relevance_score'] >= 80 else ("🟡 MODERATE PRIORITY" if row['relevance_score'] >= 50 else "🟢 LOW PRIORITY")  
-          
-        with st.expander(f"{rel_color.split()[0]} [{row['authority']}] {row['title']} — {row['published_date_original']}"):  
-              
-            # Priority 10 Card Layout  
-            st.markdown(f"### {rel_color}")  
-            st.markdown(f"**{row['authority']} — {row['doc_type']}** | Published: {row['published_date_original']} | Topic: {row['topic']}")  
-              
-            col_ai, col_review = st.columns([2, 1.2])  
-              
-            with col_ai:  
-                st.markdown("#### 🤖 AI Assessment")  
-                st.markdown(f"<span class='ai-disclaimer'>AI-assisted assessment. Regulatory interpretation requires human RA review.</span>", unsafe_allow_html=True)  
-                st.markdown(f"**Change Type:** {row['change_type']}")  
-                st.markdown(f"**What Changed:** {row['summary']}")  
-                st.markdown(f"**Why does it matter?** {row['why_relevant']}")  
-                st.markdown(f"**Required Action:** {row['required_action']}")  
-                st.progress(row['relevance_score'] / 100, text=f"**Relevance Score:** {row['relevance_score']} / 100")  
-              
-            with col_review:  
-                st.markdown("#### 👤 RA Human Review")  
-                st.markdown(f"[View Official Source Document]({row['url']})")  
-                  
-                with st.form(key=f"review_form_{row['id']}"):  
-                    options = ["Pending Review", "Action Required", "Informational", "Not Relevant"]  
-                    current_idx = options.index(row['status']) if row['status'] in options else 0  
-                      
-                    new_status = st.selectbox("Regulatory Decision", options, index=current_idx)  
-                    comment = st.text_area("Reviewer Comment", placeholder="Enter your RA assessment here...")  
-                    submit = st.form_submit_button("Save Review & Audit")  
-                      
-                    if submit:  
-                        c = conn.cursor()  
-                        c.execute("UPDATE updates SET status=? WHERE id=?", (new_status, row['id']))  
-                        c.execute("INSERT INTO audit_logs (update_id, previous_status, new_status, user, timestamp, comment) VALUES (?, ?, ?, ?, ?, ?)",   
-                                  (row['id'], row['status'], new_status, "RA Professional", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), comment))  
-                        conn.commit()  
-                        st.success("Review saved to Audit Log.")  
-                        st.rerun()
-                    
+profile_context = f"Company: {company_name}; Markets: {markets}; Products: {products}; Topics: {topics}"
+
+
+# ------------------------------------------------------------------ ANALYSIS ENGINE
+TOPIC_KEYWORDS = {
+    "GMP": ["gmp", "schedule m", "manufactur", "inspection", "sterile", "good manufacturing", "audit"],
+    "Clinical Trials": ["clinical", "trial", "ethics committee", "bioavailability", "bioequivalence"],
+    "Stability": ["stability", "shelf life", "shelf-life", "storage", "climatic"],
+    "Pharmacovigilance": ["pharmacovigilance", "adverse", "adr", "psur", "safety"],
+}
+PRODUCT_KEYWORDS = {
+    "Injectables": ["injectable", "parenteral", "sterile", "vial", "infusion"],
+    "Oral Solids": ["tablet", "capsule", "oral solid"],
+    "Biologics": ["biologic", "biosimilar", "vaccine", "monoclonal", "rdna"],
+}
+URGENCY_WORDS = ["mandatory", "deadline", "immediate", "amendment", "gazette", "withdrawal", "recall", "ban"]
+
+
+def rule_based_analysis(title: str) -> dict:
+    """Free fallback: transparent keyword scoring against the sidebar profile."""
+    t = title.lower()
+    detected = next((tp for tp, kws in TOPIC_KEYWORDS.items() if any(k in t for k in kws)), "General Regulatory")
+    score = 30
+    reasons = []
+    if detected in topics:
+        score += 30
+        reasons.append(f"matches your topic '{detected}'")
+    for p in products:
+        if any(k in t for k in PRODUCT_KEYWORDS.get(p, [])):
+            score += 15
+            reasons.append(f"mentions {p.lower()}")
+    if any(w in t for w in URGENCY_WORDS):
+        score += 10
+        reasons.append("contains urgency language")
+    score = min(score, 100)
+    impact = "High" if score >= 80 else "Medium" if score >= 50 else "Low"
+    why = "; ".join(reasons) if reasons else "no direct match with your profile"
+    return {
+        "topic": detected,
+        "summary": f"Rule-based screening: {why}.",
+        "impact": impact,
+        "relevance": score,
+    }
+
+
+def analyze_regulatory_update(title: str, authority: str) -> dict:
+    if not api_key:
+        return rule_based_analysis(title)
+
+    prompt = f"""Analyze this {authority} regulatory update: '{title}'.
+Company context: {profile_context}.
+Return JSON with exactly these keys:
+'topic' (string), 'summary' (1 sentence on what changed), 'impact' (High, Medium or Low),
+'relevance' (integer 0-100 for this company)."""
+    try:
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are an expert Regulatory Intelligence analyst."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        data = json.loads(resp.choices[0].message.content)
+        impact = str(data.get("impact", "Low")).capitalize()
+        return {
+            "topic": str(data.get("topic") or "General Regulatory"),
+            "summary": str(data.get("summary") or "No summary returned."),
+            "impact": impact if impact in ("High", "Medium", "Low") else "Low",
+            "relevance": max(0, min(100, int(data.get("relevance", 0)))),
+        }
+    except Exception as e:  # don't store error rows; fall back and tell the user
+        st.warning(f"AI call failed ({e}). Used rule-based scoring instead.")
+        return rule_based_analysis(title)
+
+
+# ------------------------------------------------------------------ SOURCE MONITOR
+def normalize_date(raw: str) -> str:
+    """Store ISO dates so ORDER BY date sorts correctly."""
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d.%m.%Y", "%d %b %Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(raw.strip(), fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def make_id(authority: str, date_iso: str, title: str) -> str:
+    # hashlib is stable across runs (built-in hash() is randomized per process -> duplicates).
+    digest = hashlib.md5(title.encode("utf-8")).hexdigest()[:8]
+    return f"{authority}-{date_iso.replace('-', '')}-{digest}"
+
+
+def insert_update(c, authority, title, date_iso, url):
+    uid = make_id(authority, date_iso, title)
+    c.execute("SELECT 1 FROM updates WHERE id=?", (uid,))
+    if c.fetchone():
+        return False
+    ai = analyze_regulatory_update(title, authority)
+    c.execute(
+        """INSERT INTO updates (id, authority, title, date, url, topic, summary, impact, relevance_score, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (uid, authority, title, date_iso, url, ai["topic"], ai["summary"], ai["impact"], ai["relevance"], "Pending Review"),
+    )
+    return True
+
+
+def scrape_cdsco(limit: int = 10) -> int:
+    c = conn.cursor()
+    added = 0
+    try:
+        res = requests.get(CDSCO_URL, headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=20)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, "html.parser")
+        rows = [r for r in soup.find_all("tr") if len(r.find_all("td")) >= 3][:limit]
+        if not rows:
+            st.warning("No notice rows found. The CDSCO page layout may have changed or the site blocked the request.")
+            return 0
+        for row in rows:
+            cols = row.find_all("td")
+            title = cols[1].get_text(" ", strip=True)
+            date_iso = normalize_date(cols[2].get_text(strip=True))
+            link = row.find("a", href=True)
+            url = urljoin(CDSCO_URL, link["href"]) if link else CDSCO_URL
+            if title and insert_update(c, "CDSCO", title, date_iso, url):
+                added += 1
+        conn.commit()
+    except requests.RequestException as e:
+        st.error(f"Source Monitor could not reach CDSCO: {e}")
+    except Exception as e:
+        st.error(f"Source Monitor error: {e}")
+    return added
+
+
+SAMPLE_NOTICES = [
+    ("Draft amendment to Schedule M: revised GMP requirements for sterile manufacturing", "2026-09-28"),
+    ("Stability study guidelines update for climatic zone IVb – injectable formulations", "2026-09-15"),
+    ("Mandatory reporting timelines for adverse drug reactions (PSUR) – notice", "2026-08-30"),
+    ("Clinical trial ethics committee registration – procedural clarification", "2026-08-12"),
+    ("Public notice: Fee revision for import licence applications", "2026-07-21"),
+]
+
+
+def load_sample_data() -> int:
+    c = conn.cursor()
+    added = sum(insert_update(c, "CDSCO (Sample)", t, d, CDSCO_URL) for t, d in SAMPLE_NOTICES)
+    conn.commit()
+    return added
+
+
+def update_status(update_id: str, widget_key: str):
+    new_status = st.session_state[widget_key]
+    c = conn.cursor()
+    c.execute("UPDATE updates SET status=? WHERE id=?", (new_status, update_id))
+    c.execute(
+        "INSERT INTO audit_logs (update_id, action, user, timestamp) VALUES (?, ?, ?, ?)",
+        (update_id, f"Status → {new_status}", "RA Professional", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    conn.commit()
+
+
+# ------------------------------------------------------------------ HEADER + ACTIONS
+st.markdown(
+    f"""<div class="hero"><h1>🛡️ RegIntel Master Platform</h1>
+    <p>Regulatory intelligence for <b>{company_name}</b> — monitor, score and triage notices in one place.</p></div>""",
+    unsafe_allow_html=True,
+)
+
+b1, b2, _ = st.columns([1.2, 1.2, 3])
+if b1.button("🔄 Run Source Monitor", type="primary", use_container_width=True):
+    with st.spinner("Monitoring CDSCO and analysing notices..."):
+        n = scrape_cdsco()
+    if n:
+        st.toast(f"{n} new notice(s) discovered", icon="✅")
+        st.balloons()
+    else:
+        st.toast("No new notices found", icon="ℹ️")
+if b2.button("🧪 Load Sample Data", use_container_width=True):
+    n = load_sample_data()
+    st.toast(f"{n} sample notice(s) added", icon="🧪")
+
+df = pd.read_sql_query("SELECT * FROM updates ORDER BY date DESC", conn)
+df["relevance_score"] = pd.to_numeric(df["relevance_score"], errors="coerce").fillna(0).astype(int)
+
+# ------------------------------------------------------------------ KPIs
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("📚 Total Updates", len(df))
+k2.metric("🔥 High Relevance (≥80)", int((df["relevance_score"] >= 80).sum()))
+k3.metric("⏳ Pending Reviews", int((df["status"] == "Pending Review").sum()))
+k4.metric("🚨 Action Required", int((df["status"] == "Action Required").sum()))
+
+tab_records, tab_insights, tab_audit = st.tabs(["📋 Records", "📊 Insights", "📑 Audit Trail"])
+
+# ------------------------------------------------------------------ RECORDS
+with tab_records:
+    if df.empty:
+        st.info("The knowledge base is empty. Click **Run Source Monitor** or **Load Sample Data** to get started.")
+    else:
+        f1, f2, f3 = st.columns([2, 2, 2])
+        search = f1.text_input("🔎 Search titles", placeholder="e.g. stability, GMP...")
+        status_filter = f2.multiselect("Status", STATUS_OPTIONS, default=STATUS_OPTIONS)
+        min_rel = f3.slider("Minimum relevance", 0, 100, 0, step=5)
+
+        view = df[df["status"].isin(status_filter) & (df["relevance_score"] >= min_rel)]
+        if search:
+            view = view[view["title"].str.contains(search, case=False, na=False)]
+
+        st.download_button(
+            "⬇️ Export filtered records (CSV)", view.to_csv(index=False).encode("utf-8"), "regintel_records.csv", "text/csv"
+        )
+        st.caption(f"Showing {len(view)} of {len(df)} records")
+
+        for _, row in view.iterrows():
+            score = row["relevance_score"]
+            icon = "🔴" if score >= 80 else "🟡" if score >= 50 else "🟢"
+            with st.expander(f"{icon} [{row['authority']}] {row['title']} — {row['date']}"):
+                cls = {"High": "pill-high", "Medium": "pill-med"}.get(row["impact"], "pill-low")
+                st.markdown(
+                    f"<span class='pill {cls}'>Impact: {row['impact']}</span>"
+                    f"<span class='pill pill-topic'>{row['topic']}</span>",
+                    unsafe_allow_html=True,
+                )
+                meta_col, ai_col, action_col = st.columns([1.5, 2, 1.2])
+                with meta_col:
+                    st.markdown("**📄 Metadata**")
+                    st.write("Document Type: Public Notice")
+                    st.write(f"Date: {row['date']}")
+                    st.markdown(f"[🔗 View Official Evidence]({row['url']})")
+                with ai_col:
+                    st.markdown("**🤖 Intelligence Engine**")
+                    st.progress(score / 100, text=f"Relevance {score}/100")
+                    st.write(row["summary"])
+                with action_col:
+                    st.markdown("**✅ RA Workflow**")
+                    key = f"status_{row['id']}"
+                    idx = STATUS_OPTIONS.index(row["status"]) if row["status"] in STATUS_OPTIONS else 0
+                    st.selectbox(
+                        "Decision",
+                        STATUS_OPTIONS,
+                        index=idx,
+                        key=key,
+                        format_func=lambda s: f"{STATUS_ICONS[s]} {s}",
+                        on_change=update_status,
+                        args=(row["id"], key),
+                    )
+
+# ------------------------------------------------------------------ INSIGHTS
+with tab_insights:
+    if df.empty:
+        st.info("No data yet — insights appear once notices are loaded.")
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Workflow status**")
+            st.bar_chart(df["status"].value_counts())
+        with c2:
+            st.markdown("**Notices by topic**")
+            st.bar_chart(df["topic"].value_counts())
+        st.markdown("**Relevance over time**")
+        trend = df.assign(date=pd.to_datetime(df["date"], errors="coerce")).dropna(subset=["date"])
+        if not trend.empty:
+            st.line_chart(trend.sort_values("date").set_index("date")["relevance_score"])
+
+# ------------------------------------------------------------------ AUDIT
+with tab_audit:
+    logs = pd.read_sql_query(
+        "SELECT update_id AS 'Update', action AS 'Action', user AS 'User', timestamp AS 'Time' "
+        "FROM audit_logs ORDER BY id DESC",
+        conn,
+    )
+    if logs.empty:
+        st.info("No decisions logged yet. Changing a record's status creates an audit entry.")
+    else:
+        st.dataframe(logs, width="stretch", hide_index=True)
